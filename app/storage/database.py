@@ -1,8 +1,10 @@
 """SQLite schema + connection management.
 
-Stage 1 only needs `markets` (current state per market) and
-`market_snapshots` (append-only history). Later stages add
-features/analyses/signals/paper_trades/etc. as those stages are built.
+Stage 1 added `markets` (current state per market) and `market_snapshots`
+(append-only history). Stage 2 adds `features` and `analyses` - every raw
+input and derived value from the feature/probability/edge/risk-gate/scoring
+pipeline is stored so an analysis can be reproduced later without re-fetching
+anything. Later stages add signals/paper_trades/etc. as those are built.
 """
 
 from __future__ import annotations
@@ -67,6 +69,58 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_market_id   ON market_snapshots(market_
 CREATE INDEX IF NOT EXISTS idx_snapshots_captured_at ON market_snapshots(captured_at);
 CREATE INDEX IF NOT EXISTS idx_snapshots_category    ON market_snapshots(category);
 CREATE INDEX IF NOT EXISTS idx_snapshots_status      ON market_snapshots(status);
+
+CREATE TABLE IF NOT EXISTS features (
+    id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id                     TEXT NOT NULL,
+    computed_at                   TEXT NOT NULL,
+    market_implied_probability    REAL,
+    volume                        REAL,
+    volume_24hr                   REAL,
+    liquidity                     REAL,
+    spread                        REAL,
+    time_to_resolution_hours      REAL,
+    market_age_hours              REAL,
+    snapshot_count                INTEGER NOT NULL DEFAULT 0,
+    history_span_hours            REAL,
+    price_change_recent           REAL,
+    volume_change_recent          REAL,
+    order_book_imbalance          REAL,
+    clob_data_available           INTEGER NOT NULL DEFAULT 0,
+    data_quality                  TEXT NOT NULL,
+    data_quality_reasons_json     TEXT NOT NULL DEFAULT '[]',
+    FOREIGN KEY (market_id) REFERENCES markets(market_id)
+);
+CREATE INDEX IF NOT EXISTS idx_features_market_id   ON features(market_id);
+CREATE INDEX IF NOT EXISTS idx_features_computed_at ON features(computed_at);
+
+CREATE TABLE IF NOT EXISTS analyses (
+    id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_id                     TEXT NOT NULL,
+    feature_id                    INTEGER,
+    computed_at                   TEXT NOT NULL,
+    category                      TEXT,
+    market_implied_probability    REAL,
+    estimated_probability         REAL,
+    confidence                    REAL,
+    adjustments_json              TEXT NOT NULL DEFAULT '[]',
+    raw_edge                      REAL,
+    adjusted_edge                 REAL,
+    expected_value                REAL,
+    category_reliability          REAL,
+    data_quality                  TEXT NOT NULL,
+    quality_gate_passed           INTEGER NOT NULL,
+    quality_gate_reason           TEXT,
+    risk_gate_passed              INTEGER,
+    risk_gate_reasons_json        TEXT NOT NULL DEFAULT '[]',
+    score                         REAL,
+    classification                TEXT NOT NULL,
+    FOREIGN KEY (market_id) REFERENCES markets(market_id),
+    FOREIGN KEY (feature_id) REFERENCES features(id)
+);
+CREATE INDEX IF NOT EXISTS idx_analyses_market_id      ON analyses(market_id);
+CREATE INDEX IF NOT EXISTS idx_analyses_computed_at    ON analyses(computed_at);
+CREATE INDEX IF NOT EXISTS idx_analyses_classification ON analyses(classification);
 """
 
 

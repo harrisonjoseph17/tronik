@@ -49,3 +49,57 @@ storage:
 
 logging:
   level: INFO
+
+# Stage 2: feature engineering / probability / edge / risk gate / scoring.
+# All thresholds here are deliberately conservative starting points, not
+# tuned values - there is no paper-trading history yet to tune against.
+analysis:
+  # How much accumulated market_snapshots history a market needs before its
+  # data is considered sufficient to estimate momentum/acceleration from.
+  # CLOB /prices-history backfill is not used for this yet (unverified for
+  # active markets) - history sufficiency is judged from our own scans only.
+  min_snapshots_for_history: 3
+  min_history_hours: 1.0
+
+  # estimated_probability is the raw market-implied probability (from
+  # mid_price) plus a small set of bounded, named adjustments. This caps
+  # the TOTAL adjustment magnitude regardless of how many rules fire.
+  max_probability_adjustment: 0.15
+  # Tighter cap applied instead of the above when data_quality == DATA_PARTIAL.
+  partial_data_max_adjustment: 0.05
+  momentum_adjustment_weight: 0.3
+
+  # Per-category discount applied to edge for expected-value purposes -
+  # reflects how much less evidence Stage 2 has for a category's estimate.
+  category_reliability:
+    politics: 0.7
+    crypto: 0.8
+    sports: 0.6
+    other: 0.3
+  slippage_estimate: 0.01
+
+  # Hard risk/data gate - failing ANY of these forces NO_TRADE/AVOID and
+  # skips scoring entirely; a high score can never override this gate.
+  risk_gate_max_spread: 0.08
+  risk_gate_min_liquidity: 2000
+  risk_gate_min_hours_to_resolution: 4.0
+  risk_gate_min_edge: 0.05
+
+  # Trade score component weights (sum to 100; weights x each 0-1 sub-score).
+  score_weight_edge: 35
+  score_weight_confidence: 20
+  score_weight_liquidity: 15
+  score_weight_data_quality: 15
+  score_weight_asymmetric_bonus: 15
+  # Normalization anchors: a sub-score reaches its full weight once the
+  # underlying value hits this point - not a hard cap on the raw value.
+  score_edge_normalization: 0.30
+  score_liquidity_normalization_multiplier: 5.0
+
+  # Classification thresholds, applied only to markets that passed the gate.
+  compound_min_score: 60
+  watch_min_score: 35
+  asymmetric_edge_threshold: 0.25
+
+  # Caps how many included markets per target category get analyzed per run.
+  max_markets_per_category: 200

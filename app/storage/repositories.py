@@ -11,6 +11,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 
+from app.storage.analysis_models import AnalysisRecord, DataQualityState, Features
 from app.storage.database import Database
 from app.storage.models import Market
 
@@ -59,6 +60,25 @@ INSERT INTO market_snapshots (
     volume, volume_24hr, liquidity, best_bid, best_ask, spread, mid_price,
     filter_reason, raw_json
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+_INSERT_FEATURES_SQL = """
+INSERT INTO features (
+    market_id, computed_at, market_implied_probability, volume, volume_24hr,
+    liquidity, spread, time_to_resolution_hours, market_age_hours,
+    snapshot_count, history_span_hours, price_change_recent, volume_change_recent,
+    order_book_imbalance, clob_data_available, data_quality, data_quality_reasons_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+_INSERT_ANALYSIS_SQL = """
+INSERT INTO analyses (
+    market_id, feature_id, computed_at, category,
+    market_implied_probability, estimated_probability, confidence, adjustments_json,
+    raw_edge, adjusted_edge, expected_value, category_reliability,
+    data_quality, quality_gate_passed, quality_gate_reason,
+    risk_gate_passed, risk_gate_reasons_json, score, classification
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -112,7 +132,12 @@ class MarketRepository:
         return self._row_to_market(row) if row else None
 
     def list_markets(
-        self, *, category: str | None = None, status: str | None = None, limit: int = 100
+        self,
+        *,
+        category: str | None = None,
+        status: str | None = None,
+        included_only: bool = False,
+        limit: int = 100,
     ) -> list[Market]:
         query = "SELECT * FROM markets WHERE 1=1"
         params: list = []
@@ -122,10 +147,28 @@ class MarketRepository:
         if status is not None:
             query += " AND status = ?"
             params.append(status)
+        if included_only:
+            query += " AND filter_reason IS NULL"
         query += " ORDER BY updated_at DESC LIMIT ?"
         params.append(limit)
         rows = self._conn.execute(query, params).fetchall()
         return [self._row_to_market(row) for row in rows]
+
+    def list_snapshots(self, market_id: str, *, limit: int = 50) -> list[dict]:
+        """Most-recent-first snapshot history for one market, used by
+        features.py to derive price/volume change over the available
+        history span."""
+        rows = self._conn.execute(
+            """
+            SELECT captured_at, mid_price, volume, volume_24hr, liquidity, spread
+            FROM market_snapshots
+            WHERE market_id = ?
+            ORDER BY captured_at DESC
+            LIMIT ?
+            """,
+            (market_id, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def count_by_category(self) -> dict[str, int]:
         rows = self._conn.execute(
@@ -220,4 +263,139 @@ class MarketRepository:
             is_duplicate=bool(row["is_duplicate"]),
             duplicate_of=row["duplicate_of"],
             filter_reason=row["filter_reason"],
+        )
+
+
+class FeatureRepository:
+    def __init__(self, db: Database):
+        self._conn = db.connect()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def insert(self, features: Features) -> int:
+        cursor = self._conn.execute(
+            _INSERT_FEATURES_SQL,
+            (
+                features.market_id,
+                features.computed_at.isoformat(),
+                features.market_implied_probability,
+                features.volume,
+                features.volume_24hr,
+                features.liquidity,
+                features.spread,
+                features.time_to_resolution_hours,
+                features.market_age_hours,
+                features.snapshot_count,
+                features.history_span_hours,
+                features.price_change_recent,
+                features.volume_change_recent,
+                features.order_book_imbalance,
+                _bool_to_int(features.clob_data_available),
+                features.data_quality.value,
+                json.dumps(features.data_quality_reasons),
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid
+
+    def list_for_market(self, market_id: str, *, limit: int = 20) -> list[Features]:
+        rows = self._conn.execute(
+            "SELECT * FROM features WHERE market_id = ? ORDER BY computed_at DESC LIMIT ?",
+            (market_id, limit),
+        ).fetchall()
+        return [self._row_to_features(row) for row in rows]
+
+    def _row_to_features(self, row: sqlite3.Row) -> Features:
+        return Features(
+            market_id=row["market_id"],
+            computed_at=datetime.fromisoformat(row["computed_at"]),
+            market_implied_probability=row["market_implied_probability"],
+            volume=row["volume"],
+            volume_24hr=row["volume_24hr"],
+            liquidity=row["liquidity"],
+            spread=row["spread"],
+            time_to_resolution_hours=row["time_to_resolution_hours"],
+            market_age_hours=row["market_age_hours"],
+            snapshot_count=row["snapshot_count"],
+            history_span_hours=row["history_span_hours"],
+            price_change_recent=row["price_change_recent"],
+            volume_change_recent=row["volume_change_recent"],
+            order_book_imbalance=row["order_book_imbalance"],
+            clob_data_available=bool(row["clob_data_available"]),
+            data_quality=DataQualityState(row["data_quality"]),
+            data_quality_reasons=json.loads(row["data_quality_reasons_json"]),
+        )
+
+
+class AnalysisRepository:
+    def __init__(self, db: Database):
+        self._conn = db.connect()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def insert(self, record: AnalysisRecord) -> int:
+        cursor = self._conn.execute(
+            _INSERT_ANALYSIS_SQL,
+            (
+                record.market_id,
+                record.feature_id,
+                record.computed_at.isoformat(),
+                record.category,
+                record.market_implied_probability,
+                record.estimated_probability,
+                record.confidence,
+                json.dumps(record.adjustments),
+                record.raw_edge,
+                record.adjusted_edge,
+                record.expected_value,
+                record.category_reliability,
+                record.data_quality.value,
+                _bool_to_int(record.quality_gate_passed),
+                record.quality_gate_reason,
+                None if record.risk_gate_passed is None else _bool_to_int(record.risk_gate_passed),
+                json.dumps(record.risk_gate_reasons),
+                record.score,
+                record.classification,
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid
+
+    def list_for_market(self, market_id: str, *, limit: int = 20) -> list[AnalysisRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM analyses WHERE market_id = ? ORDER BY computed_at DESC LIMIT ?",
+            (market_id, limit),
+        ).fetchall()
+        return [self._row_to_analysis(row) for row in rows]
+
+    def list_by_classification(self, classification: str, *, limit: int = 100) -> list[AnalysisRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM analyses WHERE classification = ? ORDER BY computed_at DESC LIMIT ?",
+            (classification, limit),
+        ).fetchall()
+        return [self._row_to_analysis(row) for row in rows]
+
+    def _row_to_analysis(self, row: sqlite3.Row) -> AnalysisRecord:
+        return AnalysisRecord(
+            market_id=row["market_id"],
+            feature_id=row["feature_id"],
+            computed_at=datetime.fromisoformat(row["computed_at"]),
+            category=row["category"],
+            market_implied_probability=row["market_implied_probability"],
+            estimated_probability=row["estimated_probability"],
+            confidence=row["confidence"],
+            adjustments=json.loads(row["adjustments_json"]),
+            raw_edge=row["raw_edge"],
+            adjusted_edge=row["adjusted_edge"],
+            expected_value=row["expected_value"],
+            category_reliability=row["category_reliability"],
+            data_quality=DataQualityState(row["data_quality"]),
+            quality_gate_passed=bool(row["quality_gate_passed"]),
+            quality_gate_reason=row["quality_gate_reason"],
+            risk_gate_passed=None if row["risk_gate_passed"] is None else bool(row["risk_gate_passed"]),
+            risk_gate_reasons=json.loads(row["risk_gate_reasons_json"]),
+            score=row["score"],
+            classification=row["classification"],
         )

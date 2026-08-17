@@ -1,6 +1,7 @@
 """Thin CLI dispatcher for polymarket-companion.
 
     python main.py scan     - run one discovery scan cycle
+    python main.py analyze  - run the Stage 2 feature/probability/edge/risk/score pipeline
     python main.py initdb   - create the SQLite schema
 """
 
@@ -10,6 +11,7 @@ import argparse
 import asyncio
 import logging
 
+from app.analysis.pipeline import run_analysis_once
 from app.config.loader import load_config
 from app.polymarket.scanner import run_scan_once
 from app.storage.database import Database
@@ -19,6 +21,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="polymarket-companion")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("scan", help="Run one discovery scan cycle")
+    subparsers.add_parser("analyze", help="Run the feature/probability/edge/risk/score pipeline")
     subparsers.add_parser("initdb", help="Create the SQLite schema")
     args = parser.parse_args()
 
@@ -32,8 +35,16 @@ def main() -> None:
         return
 
     db.init_schema()
-    summary = asyncio.run(run_scan_once(config, db))
-    print(summary)
+
+    if args.command == "scan":
+        summary = asyncio.run(run_scan_once(config, db))
+        print(summary)
+        return
+
+    if args.command == "analyze":
+        summary = run_analysis_once(config, db)
+        print(summary)
+        return
 
 
 if __name__ == "__main__":
