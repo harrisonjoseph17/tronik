@@ -7,8 +7,12 @@ Discovery and market-state persistence are Stage 1's scanner.py - this
 module reads what's already in markets/market_snapshots (the "included"
 subset: filter_reason IS NULL, i.e. markets Stage 1's filters didn't
 exclude) for the three target categories, and writes one features row plus
-one analyses row per market analyzed. No network I/O happens here - this is
-pure SQLite + arithmetic, so it's synchronous, unlike scanner.py.
+one analyses row per market analyzed.
+
+A live CLOB order-book fetch (app/analysis/order_book.py) happens for every
+market that passes the data quality gate - not before, so markets that
+were never going to qualify don't cost a CLOB call - which is why this
+module is async, unlike Stage 1's fully-synchronous storage-only modules.
 
 Selective LLM review is the next stage after classification and is not
 implemented here.
@@ -16,6 +20,7 @@ implemented here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -24,11 +29,13 @@ from datetime import datetime, timezone
 from app.analysis.classify import classify
 from app.analysis.edge import compute_edge
 from app.analysis.features import compute_features
+from app.analysis.order_book import SupportsGetBook, fetch_order_book_snapshot
 from app.analysis.probability import estimate_probability
 from app.analysis.quality_gate import evaluate_quality_gate
 from app.analysis.risk_gate import evaluate_risk_gate
 from app.analysis.scoring import compute_score
 from app.config.loader import AppConfig
+from app.polymarket.client import CLOBClient
 from app.storage.analysis_models import AnalysisRecord
 from app.storage.database import Database
 from app.storage.repositories import AnalysisRepository, FeatureRepository, MarketRepository
@@ -48,10 +55,20 @@ class AnalysisSummary:
     elapsed_seconds: float = 0.0
 
 
-def run_analysis_once(config: AppConfig, db: Database) -> AnalysisSummary:
+async def run_analysis_once(
+    config: AppConfig, db: Database, *, clob: SupportsGetBook | None = None
+) -> AnalysisSummary:
     start = time.monotonic()
     summary = AnalysisSummary()
     now = datetime.now(timezone.utc)
+
+    owns_clob = clob is None
+    if clob is None:
+        clob = CLOBClient(
+            timeout=config.filters.request_timeout_seconds,
+            max_retries=config.filters.max_retries,
+            rate_limit_per_10s=config.filters.clob_rate_limit_per_10s,
+        )
 
     market_repo = MarketRepository(db)
     feature_repo = FeatureRepository(db)
@@ -92,6 +109,11 @@ def run_analysis_once(config: AppConfig, db: Database) -> AnalysisSummary:
                 )
                 _tally(summary, classification.value)
                 continue
+
+            if market.clob_token_ids:
+                book = await fetch_order_book_snapshot(clob, market.clob_token_ids[0])
+                features.order_book_imbalance = book.imbalance
+                features.clob_data_available = book.available
 
             estimate = estimate_probability(features, config.analysis)
             edge_result = compute_edge(estimate, market.category, config.analysis)
@@ -135,6 +157,8 @@ def run_analysis_once(config: AppConfig, db: Database) -> AnalysisSummary:
         market_repo.close()
         feature_repo.close()
         analysis_repo.close()
+        if owns_clob:
+            await clob.aclose()
 
     summary.elapsed_seconds = round(time.monotonic() - start, 2)
     logger.info(
@@ -162,4 +186,4 @@ if __name__ == "__main__":
     cfg = load_config()
     database = Database(cfg.db_path)
     database.init_schema()
-    run_analysis_once(cfg, database)
+    asyncio.run(run_analysis_once(cfg, database))

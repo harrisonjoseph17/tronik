@@ -1,5 +1,6 @@
 from app.analysis.edge import EdgeResult
 from app.analysis.risk_gate import (
+    REASON_CLOB_UNAVAILABLE,
     REASON_INSUFFICIENT_EDGE,
     REASON_LIQUIDITY_UNAVAILABLE,
     REASON_LOW_LIQUIDITY,
@@ -28,6 +29,7 @@ def _features(**overrides) -> Features:
         liquidity=5000.0,
         time_to_resolution_hours=24.0,
         data_quality=DataQualityState.SUFFICIENT,
+        clob_data_available=True,
     )
     defaults.update(overrides)
     from datetime import datetime, timezone
@@ -93,6 +95,17 @@ def test_multiple_failures_all_reported():
     result = evaluate_risk_gate(_features(spread=0.5, liquidity=10.0), _edge(0.0), CONFIG)
     assert result.passed is False
     assert set(result.reasons) == {REASON_WIDE_SPREAD, REASON_LOW_LIQUIDITY, REASON_INSUFFICIENT_EDGE}
+
+
+def test_fails_when_clob_data_unavailable():
+    result = evaluate_risk_gate(_features(clob_data_available=False), _edge(), CONFIG)
+    assert result.passed is False
+    assert REASON_CLOB_UNAVAILABLE in result.reasons
+
+
+def test_passes_when_clob_data_available_and_everything_else_healthy():
+    result = evaluate_risk_gate(_features(clob_data_available=True), _edge(), CONFIG)
+    assert result.passed is True
 
 
 def test_high_score_cannot_be_represented_here_gate_is_score_independent():

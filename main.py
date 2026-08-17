@@ -42,7 +42,7 @@ def main() -> None:
         return
 
     if args.command == "analyze":
-        summary = run_analysis_once(config, db)
+        summary = asyncio.run(run_analysis_once(config, db))
         print(summary)
         return
 

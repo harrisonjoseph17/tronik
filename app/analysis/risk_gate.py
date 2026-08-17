@@ -12,14 +12,13 @@ re-checks conditions that depend on values computed after that point (edge)
 or that are independent of data quality (spread, liquidity,
 time-to-resolution).
 
-"Stale/unavailable CLOB data" is a required condition per the approved plan
-but is NOT triggered yet: Stage 2's first pass does not fetch live CLOB
-order-book data (Features.clob_data_available is always False - see
-features.py's docstring). Treating "unavailable" as an active trigger right
-now would force every single market to fail this gate, which isn't an
-honest risk signal, just an unfinished feature standing in for one.
-REASON_CLOB_UNAVAILABLE is defined below and reserved for the CLOB
-integration follow-up rather than invented against an unverified endpoint.
+"Stale/unavailable CLOB data": pipeline.py fetches a live CLOB order book
+(app/analysis/order_book.py) for every market that passes the quality gate
+and sets Features.clob_data_available accordingly before this gate runs.
+A live probe confirmed /book returns 404 for markets with no current live
+orders even when Gamma reports them as active/order-book-enabled (e.g. a
+paused esports sub-market) - so "unavailable" is a real, expected signal,
+not a broken endpoint, and is checked below.
 """
 
 from __future__ import annotations
@@ -37,7 +36,6 @@ REASON_LIQUIDITY_UNAVAILABLE = "liquidity_unavailable"
 REASON_NEAR_RESOLUTION = "near_resolution"
 REASON_RESOLUTION_UNKNOWN = "resolution_date_unknown"
 REASON_INSUFFICIENT_EDGE = "insufficient_edge"
-# Reserved, not yet triggered - see module docstring.
 REASON_CLOB_UNAVAILABLE = "clob_unavailable"
 
 
@@ -67,5 +65,8 @@ def evaluate_risk_gate(features: Features, edge: EdgeResult, config: AnalysisSet
 
     if abs(edge.adjusted_edge) < config.risk_gate_min_edge:
         reasons.append(REASON_INSUFFICIENT_EDGE)
+
+    if not features.clob_data_available:
+        reasons.append(REASON_CLOB_UNAVAILABLE)
 
     return RiskGateResult(passed=len(reasons) == 0, reasons=reasons)
