@@ -7,6 +7,14 @@ BEFORE Stage 2's CLOB-dependent code (order-book-imbalance feature, CLOB
 staleness gate condition) gets implemented, so that code can be written
 against confirmed shapes instead of guessed ones.
 
+Round 1 of this probe picked a market via Gamma's `enableOrderBook` flag
+and got a 404 from /book - Gamma flagging a market as order-book-enabled
+does not mean that specific token has live orders right now (e.g. a paused
+esports sub-market between games). Round 2 instead picks a token from the
+Data API's /trades feed, which shows what's *actually* trading this
+instant (e.g. 5-minute BNB/ETH up-down markets) - a far more reliable
+signal that /book will return something real.
+
 Run with: python scripts/api_probe_stage2.py
 """
 
@@ -21,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx  # noqa: E402
 
-from app.polymarket.client import CLOBClient, GammaClient, PolymarketAPIError  # noqa: E402
+from app.polymarket.client import CLOBClient, PolymarketAPIError  # noqa: E402
 
 
 def _dump(label: str, value) -> None:
@@ -32,24 +40,38 @@ def _dump(label: str, value) -> None:
         print(repr(value)[:1500])
 
 
-async def find_active_tradeable_market(gamma: GammaClient) -> tuple[str, str] | None:
-    """Return (question, token_id) for one active, order-book-enabled market."""
-    response = await gamma.get_events(
-        active=True, closed=False, limit=20, order="volume24hr", ascending=False
-    )
-    events = response if isinstance(response, list) else (response.get("data") or [])
-    for event in events:
-        for market in event.get("markets") or []:
-            if not market.get("enableOrderBook"):
-                continue
-            token_ids_raw = market.get("clobTokenIds")
-            try:
-                token_ids = json.loads(token_ids_raw) if isinstance(token_ids_raw, str) else token_ids_raw
-            except json.JSONDecodeError:
-                continue
-            if token_ids:
-                return market.get("question", "?"), token_ids[0]
-    return None
+async def find_actively_trading_token(raw_client: httpx.AsyncClient) -> tuple[str, str, str] | None:
+    """Return (title, token_id, condition_id) for a market with a real,
+    recent trade per the Data API's /trades feed."""
+    resp = await raw_client.get("https://data-api.polymarket.com/trades", params={"limit": 20})
+    resp.raise_for_status()
+    trades = resp.json()
+    if not trades:
+        return None
+    trade = trades[0]
+    return trade.get("title", "?"), trade.get("asset"), trade.get("conditionId")
+
+
+async def probe_trades_filtered_by_market(raw_client: httpx.AsyncClient, condition_id: str) -> None:
+    print("\n=== E. GET /trades filtered by market (confirming the query param name) ===")
+    for param_name in ("market", "asset", "conditionId"):
+        try:
+            resp = await raw_client.get(
+                "https://data-api.polymarket.com/trades",
+                params={param_name: condition_id, "limit": 5},
+            )
+            print(f"\nparam={param_name} -> HTTP {resp.status_code}")
+            if resp.status_code < 400:
+                data = resp.json()
+                if isinstance(data, list) and data:
+                    all_match = all(t.get("conditionId") == condition_id for t in data)
+                    print(f"Returned {len(data)} trades, all match requested market: {all_match}")
+                else:
+                    print(f"Returned {len(data) if isinstance(data, list) else data!r} trades")
+            else:
+                print(f"Body: {resp.text[:300]}")
+        except httpx.HTTPError as exc:
+            print(f"param={param_name} FAILED: {exc}")
 
 
 async def probe_book(clob: CLOBClient, token_id: str) -> None:
@@ -135,25 +157,26 @@ async def probe_data_api(raw_client: httpx.AsyncClient, condition_id: str | None
 
 
 async def main() -> None:
-    gamma = GammaClient()
     clob = CLOBClient()
     raw_client = httpx.AsyncClient(timeout=10.0)
     try:
-        print("=== Finding one active, order-book-enabled market via Gamma ===")
-        found = await find_active_tradeable_market(gamma)
+        print("=== Finding a token that is ACTUALLY trading right now (via Data API /trades) ===")
+        found = await find_actively_trading_token(raw_client)
         if found is None:
-            print("No active order-book-enabled market found in the first 20 events - re-run later.")
+            print("No recent trades found - re-run in a moment.")
             return
-        question, token_id = found
-        print(f"Using market: {question!r}")
+        title, token_id, condition_id = found
+        print(f"Using market: {title!r}")
         print(f"token_id: {token_id}")
+        print(f"condition_id: {condition_id}")
 
         await probe_book(clob, token_id)
         await probe_prices_history(raw_client, token_id)
         await probe_batch_endpoints(raw_client, [token_id])
-        await probe_data_api(raw_client, None)
+        await probe_data_api(raw_client, condition_id)
+        if condition_id:
+            await probe_trades_filtered_by_market(raw_client, condition_id)
     finally:
-        await gamma.aclose()
         await clob.aclose()
         await raw_client.aclose()
 
