@@ -26,6 +26,7 @@ from app.config.loader import load_config  # noqa: E402
 from app.polymarket.client import CLOBClient, GammaClient, PolymarketAPIError  # noqa: E402
 from app.polymarket.scanner import run_scan_once  # noqa: E402
 from app.storage.database import Database  # noqa: E402
+from app.storage.models import Market  # noqa: E402
 from app.storage.repositories import MarketRepository  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
@@ -63,6 +64,20 @@ async def dump_raw_sample(client: GammaClient) -> bool:
     return True
 
 
+def _pick_clob_target(repo: MarketRepository) -> Market | None:
+    """Prefer an active market with a live order book; CLOB /price 404s for
+    tokens whose market is closed/resolved, so picking any market with
+    clob_token_ids regardless of status is not sufficient."""
+    active_markets = repo.list_markets(status="active", limit=1000)
+    for market in active_markets:
+        if market.enable_order_book and market.clob_token_ids:
+            return market
+    for market in active_markets:
+        if market.clob_token_ids:
+            return market
+    return None
+
+
 async def run_discovery_and_persist():
     print("\n=== 2. Full discovery pipeline (live) ===")
     config = load_config()
@@ -86,12 +101,7 @@ async def run_discovery_and_persist():
                 f"mid_price={market.mid_price} liquidity={market.liquidity}"
             )
 
-        target_market = None
-        for market in repo.list_markets(limit=200):
-            if market.clob_token_ids:
-                target_market = market
-                break
-        return target_market
+        return _pick_clob_target(repo)
     finally:
         repo.close()
 
