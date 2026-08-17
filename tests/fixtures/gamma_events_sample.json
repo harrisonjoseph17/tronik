@@ -1,0 +1,104 @@
+[
+  {
+    "id": "evt-1",
+    "title": "Elon Musk Twitter Activity",
+    "tags": [{"label": "Politics"}],
+    "markets": [
+      {
+        "id": "mkt-1",
+        "question": "Will Elon Musk tweet 100+ times this week?",
+        "slug": "elon-100-tweets",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.55\", \"0.45\"]",
+        "clobTokenIds": "[\"tok-1a\", \"tok-1b\"]",
+        "volume": "12000",
+        "volume24hr": "800",
+        "liquidity": "5000",
+        "bestBid": "0.54",
+        "bestAsk": "0.56",
+        "active": true,
+        "closed": false,
+        "archived": false,
+        "enableOrderBook": true,
+        "startDate": "2026-08-10T00:00:00Z",
+        "endDate": "2030-01-01T00:00:00Z"
+      }
+    ]
+  },
+  {
+    "id": "evt-2",
+    "title": "Bitcoin Daily",
+    "tags": [{"label": "Crypto"}],
+    "markets": [
+      {
+        "id": "mkt-2",
+        "question": "Will Bitcoin be up today?",
+        "slug": "btc-up-today",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.50\", \"0.50\"]",
+        "clobTokenIds": "[\"tok-2a\", \"tok-2b\"]",
+        "volume": "3000",
+        "volume24hr": "3000",
+        "liquidity": "2000",
+        "active": true,
+        "closed": false,
+        "archived": false,
+        "enableOrderBook": true,
+        "startDate": "2026-08-17T00:00:00Z",
+        "endDate": "2030-01-01T00:00:00Z"
+      },
+      {
+        "id": "mkt-2-dup",
+        "question": "Will Bitcoin be up today? (mirror)",
+        "slug": "btc-up-today-mirror",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.50\", \"0.50\"]",
+        "clobTokenIds": "[\"tok-2a\", \"tok-2b\"]",
+        "volume": "500",
+        "volume24hr": "100",
+        "liquidity": "2000",
+        "active": true,
+        "closed": false,
+        "archived": false,
+        "enableOrderBook": true,
+        "startDate": "2026-08-17T00:00:00Z",
+        "endDate": "2030-01-01T00:00:00Z"
+      }
+    ]
+  },
+  {
+    "id": "evt-3",
+    "title": "Weather Markets",
+    "tags": [{"label": "Other"}],
+    "markets": [
+      {
+        "id": "mkt-3",
+        "question": "Will it rain in Paris tomorrow?",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"0.30\", \"0.70\"]",
+        "clobTokenIds": "[\"tok-3a\", \"tok-3b\"]",
+        "volume": "100",
+        "liquidity": "50",
+        "active": true,
+        "closed": false,
+        "archived": false,
+        "enableOrderBook": false,
+        "endDate": "2030-01-01T00:00:00Z"
+      },
+      {
+        "id": "mkt-4",
+        "question": "Old resolved market",
+        "outcomes": "[\"Yes\", \"No\"]",
+        "outcomePrices": "[\"1.0\", \"0.0\"]",
+        "clobTokenIds": "[\"tok-4a\", \"tok-4b\"]",
+        "volume": "9000",
+        "liquidity": "9000",
+        "active": false,
+        "closed": true,
+        "archived": false,
+        "enableOrderBook": false,
+        "endDate": "2026-01-01T00:00:00Z"
+      }
+    ]
+  }
+]

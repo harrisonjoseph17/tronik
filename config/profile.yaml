@@ -1,0 +1,51 @@
+# Personal trading-companion profile. Non-secret, tunable settings only.
+# See config/markets.yaml for category/keyword rules.
+
+purpose: personal_polymarket_trade_companion
+
+objective:
+  - accumulate_profit
+  - compound_capital
+  - minimize_unnecessary_losses
+  - prioritize_risk_adjusted_edge
+  - seek_asymmetric_opportunities
+
+style: adaptive_selective
+preferred_return_target: "2x-3x when justified"
+target_win_rate: 0.60
+
+avoid:
+  - forced_trades
+  - revenge_trading
+  - chasing_losses
+  - overtrading
+  - illiquid_markets
+  - wide_spreads
+  - ambiguous_resolution
+  - unsupported_claims
+
+# Stage 1 discovery/filter thresholds. These describe the analysis universe,
+# not hard trading rules - markets outside these thresholds are still stored
+# (see filter_reason on each market) so later stages can revisit the decision.
+filters:
+  min_liquidity: 1000
+  max_spread: 0.10
+  min_hours_to_resolution: 2
+
+discovery:
+  events_page_size: 100
+  events_max_pages: 20
+  order: volume24hr
+  ascending: false
+
+http:
+  timeout_seconds: 10
+  max_retries: 4
+  gamma_rate_limit_per_10s: 3500
+  clob_rate_limit_per_10s: 1500
+
+storage:
+  db_path: data/polymarket.db
+
+logging:
+  level: INFO

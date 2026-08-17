@@ -1,0 +1,35 @@
+from pathlib import Path
+
+from app.config.loader import load_config
+
+
+def test_load_config_from_real_files():
+    config = load_config(
+        profile_path=Path("config/profile.yaml"),
+        markets_path=Path("config/markets.yaml"),
+    )
+    assert config.filters.min_liquidity == 1000.0
+    assert config.filters.max_spread == 0.10
+    assert config.db_path == Path("data/polymarket.db")
+    assert len(config.category_rules) == 5
+    categories = {(r.category, r.subcategory) for r in config.category_rules}
+    assert ("politics", "elon_musk_tweets") in categories
+    assert ("crypto", "btc_updown") in categories
+    assert ("sports", "football") in categories
+
+
+def test_load_config_missing_files_uses_defaults(tmp_path: Path):
+    config = load_config(
+        profile_path=tmp_path / "does_not_exist.yaml",
+        markets_path=tmp_path / "also_missing.yaml",
+    )
+    assert config.filters.min_liquidity == 1000.0
+    assert config.category_rules == []
+
+
+def test_load_config_partial_profile_uses_defaults_for_missing_keys(tmp_path: Path):
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text("filters:\n  min_liquidity: 5000\n")
+    config = load_config(profile_path=profile_path, markets_path=tmp_path / "missing.yaml")
+    assert config.filters.min_liquidity == 5000.0
+    assert config.filters.max_spread == 0.10  # default preserved

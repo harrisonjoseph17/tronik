@@ -1,0 +1,70 @@
+# Category / subcategory keyword rules used by app/polymarket/categorize.py.
+# Matching is a simple case-insensitive substring match against the market
+# question + parent event title + event tags. Deliberately simple for Stage 1
+# (no NER) - tune these lists once the live smoke test shows real Gamma
+# question phrasing. Markets that match nothing are still stored, tagged
+# category="other", subcategory="uncategorized" - nothing is discarded.
+
+categories:
+  politics:
+    elon_musk_tweets:
+      keywords:
+        - "elon musk"
+        - "elon tweet"
+        - "@elonmusk"
+        - "musk post"
+        - "musk tweet"
+    white_house_tweets:
+      keywords:
+        - "white house tweet"
+        - "white house post"
+        - "@whitehouse"
+        - "potus tweet"
+        - "potus post"
+    ukraine_president_tweets:
+      keywords:
+        - "zelensky tweet"
+        - "zelenskyy tweet"
+        - "zelensky post"
+        - "zelenskyy post"
+        - "@zelenskyyua"
+        - "president of ukraine"
+
+  crypto:
+    btc_updown:
+      keywords:
+        - "bitcoin up or down"
+        - "btc up or down"
+        - "will bitcoin"
+        - "will btc"
+        - "bitcoin price"
+        - "btc price"
+        - "bitcoin above"
+        - "bitcoin below"
+
+  sports:
+    football:
+      # Broad, competition-name-based coverage rather than hard-coded per-league
+      # logic in Python - extend this list as new competitions come up.
+      keywords:
+        - "premier league"
+        - "champions league"
+        - "europa league"
+        - "conference league"
+        - "la liga"
+        - "serie a"
+        - "bundesliga"
+        - "ligue 1"
+        - "world cup"
+        - "euro 2"
+        - "european championship"
+        - "copa america"
+        - "copa libertadores"
+        - "mls"
+        - "fa cup"
+        - "efl cup"
+        - "carabao cup"
+        - "soccer"
+        - "football match"
+        - " vs. "
+        - " fc "
