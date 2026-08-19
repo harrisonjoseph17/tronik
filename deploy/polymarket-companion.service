@@ -1,0 +1,21 @@
+[Unit]
+Description=Polymarket Companion - one scan + analyze cycle
+# Triggered by polymarket-companion.timer, not started/enabled directly.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/tronik
+ExecStart=/root/tronik/scripts/run_scan_and_analyze.sh
+# Hard cap so a hung run can't consume resources indefinitely on a small
+# VPS. app/polymarket/client.py's own bounded retry/backoff should already
+# prevent this; this is a cheap second layer, not the primary defense.
+TimeoutStartSec=600
+MemoryMax=512M
+# No Restart= - this is a oneshot service fired by a timer, not a
+# long-running daemon. A failed run's natural retry is the timer's next
+# scheduled firing, not an immediate systemd-managed restart.
+
+[Install]
+# No WantedBy - this service is only ever started by the timer.

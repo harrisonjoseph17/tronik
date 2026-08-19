@@ -1,0 +1,17 @@
+[Unit]
+Description=Run polymarket-companion scan+analyze every 15 minutes
+
+[Timer]
+# Matches FilterSettings.scan_interval_seconds's default (900s) in
+# config/profile.yaml. The two are not linked automatically - systemd
+# timers can't read the app's YAML config - so if that default is changed,
+# update this value to match and run `systemctl daemon-reload`.
+OnBootSec=5min
+OnUnitActiveSec=15min
+# Catches up on a missed run after a reboot or downtime window, rather
+# than silently waiting for the next scheduled tick.
+Persistent=true
+Unit=polymarket-companion.service
+
+[Install]
+WantedBy=timers.target

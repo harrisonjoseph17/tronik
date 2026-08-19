@@ -6,9 +6,10 @@ them deterministically, uses an LLM only on a small shortlist, alerts over
 Telegram, and tracks paper-trading performance honestly before any live
 trading is ever considered.
 
-**Status: Stage 1 (market discovery only).** Feature engineering, scoring,
-LLM analysis, Telegram, paper trading, and performance tracking are not
-built yet — see [Roadmap](#roadmap).
+**Status: Stage 2 (discovery + feature/probability/edge/risk-gate/scoring
+pipeline, narrowed to four target market families, deployable via
+systemd).** LLM analysis, Telegram, paper trading, and performance tracking
+are not built yet — see [Roadmap](#roadmap).
 
 ## Why this exists
 
@@ -126,7 +127,13 @@ No secrets are needed for Stage 1 — see `.env.example`.
 ```bash
 python main.py initdb   # create data/polymarket.db schema
 python main.py scan     # run one discovery cycle, prints a ScanSummary
+python main.py analyze  # run features->quality gate->probability->edge->risk gate->scoring->classification
 ```
+
+`analyze` only considers the four target `(category, subcategory)` pairs
+configured in `config/profile.yaml`'s `target_subcategories` (see
+[Architecture](#architecture-current)) - see [Deployment](#deployment) to
+run both commands automatically on a schedule instead of by hand.
 
 ## Tests
 
@@ -134,8 +141,8 @@ python main.py scan     # run one discovery cycle, prints a ScanSummary
 pytest
 ```
 
-All 64 tests run against mocked HTTP responses (via `respx`) or an in-memory
-temp SQLite file — no network access required.
+All 199 tests run against mocked HTTP responses (via `respx`), stubs, or an
+in-memory temp SQLite file — no network access required.
 
 ## Live smoke test
 
@@ -147,6 +154,58 @@ Read-only and safe to re-run: writes to `data/smoke_test.db` (never the real
 DB), dumps the raw Gamma response so field-name assumptions can be
 double-checked, runs the full discovery pipeline, and makes one CLOB
 `/price` call to confirm CLOB reachability. No orders are ever placed.
+
+## Deployment
+
+`scan` and `analyze` are one-shot commands - useful history only
+accumulates if something keeps running them. `deploy/` has a systemd
+service+timer for that; `scripts/setup.sh` installs them.
+
+**Install** (as root, on the VPS - paths in the unit files assume the repo
+lives at `/root/tronik`; edit `deploy/*.service`/`deploy/*.timer` first if
+that's not where it's checked out):
+
+```bash
+sudo bash scripts/setup.sh
+```
+
+This copies the unit files to `/etc/systemd/system/`, reloads systemd, and
+enables+starts the timer. It runs `scan` then `analyze` every 15 minutes
+(`OnUnitActiveSec` in `deploy/polymarket-companion.timer` - matches
+`filters.scan_interval_seconds`'s default in `config/profile.yaml`, though
+the two aren't linked automatically; update both if you change the
+interval).
+
+**Check it's running:**
+
+```bash
+systemctl list-timers polymarket-companion.timer   # next/last firing
+journalctl -u polymarket-companion.service -f      # live logs
+```
+
+**Update:** `git pull` - no restart needed, the next scheduled run picks up
+the new code automatically.
+
+**Backup:** SQLite's own backup command, not a raw file copy (the DB may be
+mid-write):
+
+```bash
+sqlite3 data/polymarket.db ".backup data/polymarket-backup-$(date +%F).db"
+```
+
+**Uninstall:**
+
+```bash
+sudo systemctl disable --now polymarket-companion.timer
+sudo rm /etc/systemd/system/polymarket-companion.{service,timer}
+sudo systemctl daemon-reload
+```
+
+`analyze` makes a live CLOB `/book` call per candidate market that passes
+the data quality gate, so this cadence means recurring CLOB traffic
+roughly every 15 minutes indefinitely - `scan` and `analyze` are coupled on
+the same timer for simplicity; splitting them onto independent intervals
+is a small follow-up if that traffic ever needs tuning down.
 
 ## Design principles
 
