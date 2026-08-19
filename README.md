@@ -141,7 +141,7 @@ run both commands automatically on a schedule instead of by hand.
 pytest
 ```
 
-All 199 tests run against mocked HTTP responses (via `respx`), stubs, or an
+All 233 tests run against mocked HTTP responses (via `respx`), stubs, or an
 in-memory temp SQLite file — no network access required.
 
 ## Live smoke test
@@ -157,7 +157,7 @@ double-checked, runs the full discovery pipeline, and makes one CLOB
 
 ## Deployment
 
-`scan` and `analyze` are one-shot commands - useful history only
+`scan`, `analyze`, and `resolve` are one-shot commands - useful history only
 accumulates if something keeps running them. `deploy/` has a systemd
 service+timer for that; `scripts/setup.sh` installs them.
 
@@ -170,10 +170,10 @@ sudo bash scripts/setup.sh
 ```
 
 This copies the unit files to `/etc/systemd/system/`, reloads systemd, and
-enables+starts the timer. It runs `scan` then `analyze` every 15 minutes
-(`OnUnitActiveSec` in `deploy/polymarket-companion.timer` - matches
-`filters.scan_interval_seconds`'s default in `config/profile.yaml`, though
-the two aren't linked automatically; update both if you change the
+enables+starts the timer. It runs `scan`, then `analyze`, then `resolve`
+every 15 minutes (`OnUnitActiveSec` in `deploy/polymarket-companion.timer`
+- matches `filters.scan_interval_seconds`'s default in `config/profile.yaml`,
+though the two aren't linked automatically; update both if you change the
 interval).
 
 **Check it's running:**
@@ -202,10 +202,13 @@ sudo systemctl daemon-reload
 ```
 
 `analyze` makes a live CLOB `/book` call per candidate market that passes
-the data quality gate, so this cadence means recurring CLOB traffic
-roughly every 15 minutes indefinitely - `scan` and `analyze` are coupled on
-the same timer for simplicity; splitting them onto independent intervals
-is a small follow-up if that traffic ever needs tuning down.
+the data quality gate, and `resolve` makes a Gamma `/markets` call per
+not-yet-resolved market in `analyses`, so this cadence means recurring
+Gamma/CLOB traffic roughly every 15 minutes indefinitely - `scan`, `analyze`,
+and `resolve` are coupled on the same timer for simplicity; splitting them
+onto independent intervals is a small follow-up if that traffic ever needs
+tuning down. `resolve`'s per-run cost naturally shrinks over time since it
+only ever looks at markets not already marked resolved.
 
 ## Design principles
 

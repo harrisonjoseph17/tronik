@@ -1,5 +1,5 @@
 [Unit]
-Description=Run polymarket-companion scan+analyze every 15 minutes
+Description=Run polymarket-companion scan+analyze+resolve every 15 minutes
 
 [Timer]
 # Matches FilterSettings.scan_interval_seconds's default (900s) in

@@ -1,5 +1,5 @@
 [Unit]
-Description=Polymarket Companion - one scan + analyze cycle
+Description=Polymarket Companion - one scan + analyze + resolve cycle
 # Triggered by polymarket-companion.timer, not started/enabled directly.
 After=network-online.target
 Wants=network-online.target
