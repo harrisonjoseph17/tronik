@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from app.storage.analysis_models import AnalysisRecord, DataQualityState, Features
 from app.storage.database import Database
 from app.storage.models import Market
+from app.storage.resolution_models import Resolution, ResolutionStatus
 
 _UPSERT_SQL = """
 INSERT INTO markets (
@@ -402,4 +403,97 @@ class AnalysisRepository:
             risk_gate_reasons=json.loads(row["risk_gate_reasons_json"]),
             score=row["score"],
             classification=row["classification"],
+        )
+
+
+_UPSERT_RESOLUTION_SQL = """
+INSERT INTO resolutions (
+    market_id, resolution_status, resolved_at, winning_outcome_index,
+    winning_outcome, raw_resolution_json, checked_at
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(market_id) DO UPDATE SET
+    resolution_status=excluded.resolution_status,
+    resolved_at=excluded.resolved_at,
+    winning_outcome_index=excluded.winning_outcome_index,
+    winning_outcome=excluded.winning_outcome,
+    raw_resolution_json=excluded.raw_resolution_json,
+    checked_at=excluded.checked_at
+"""
+
+
+class ResolutionRepository:
+    def __init__(self, db: Database):
+        self._conn = db.connect()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def upsert(self, resolution: Resolution) -> None:
+        """Idempotent, with one hard rule: once a market's resolution_status
+        is 'resolved', nothing about its outcome can ever change - not the
+        status, not the winning outcome, not the raw JSON. Only checked_at
+        still advances, so it's visible that a check happened without
+        disturbing the confirmed record."""
+        existing = self.get(resolution.market_id)
+        checked_at_text = resolution.checked_at.isoformat()
+
+        if existing is not None and existing.resolution_status == ResolutionStatus.RESOLVED:
+            self._conn.execute(
+                "UPDATE resolutions SET checked_at = ? WHERE market_id = ?",
+                (checked_at_text, resolution.market_id),
+            )
+            self._conn.commit()
+            return
+
+        self._conn.execute(
+            _UPSERT_RESOLUTION_SQL,
+            (
+                resolution.market_id,
+                resolution.resolution_status.value,
+                resolution.resolved_at.isoformat() if resolution.resolved_at else None,
+                resolution.winning_outcome_index,
+                resolution.winning_outcome,
+                resolution.raw_resolution_json,
+                checked_at_text,
+            ),
+        )
+        self._conn.commit()
+
+    def get(self, market_id: str) -> Resolution | None:
+        row = self._conn.execute(
+            "SELECT * FROM resolutions WHERE market_id = ?", (market_id,)
+        ).fetchone()
+        return self._row_to_resolution(row) if row else None
+
+    def list_by_status(self, status: ResolutionStatus, *, limit: int = 100) -> list[Resolution]:
+        rows = self._conn.execute(
+            "SELECT * FROM resolutions WHERE resolution_status = ? ORDER BY checked_at DESC LIMIT ?",
+            (status.value, limit),
+        ).fetchall()
+        return [self._row_to_resolution(row) for row in rows]
+
+    def list_market_ids_pending_check(self, *, limit: int = 500) -> list[str]:
+        """Distinct market_ids from analyses with no resolutions row yet, or
+        one that isn't (yet) resolved - the candidate set for a check run."""
+        rows = self._conn.execute(
+            """
+            SELECT DISTINCT a.market_id
+            FROM analyses a
+            LEFT JOIN resolutions r ON r.market_id = a.market_id
+            WHERE r.market_id IS NULL OR r.resolution_status != ?
+            LIMIT ?
+            """,
+            (ResolutionStatus.RESOLVED.value, limit),
+        ).fetchall()
+        return [row["market_id"] for row in rows]
+
+    def _row_to_resolution(self, row: sqlite3.Row) -> Resolution:
+        return Resolution(
+            market_id=row["market_id"],
+            resolution_status=ResolutionStatus(row["resolution_status"]),
+            resolved_at=datetime.fromisoformat(row["resolved_at"]) if row["resolved_at"] else None,
+            winning_outcome_index=row["winning_outcome_index"],
+            winning_outcome=row["winning_outcome"],
+            raw_resolution_json=row["raw_resolution_json"],
+            checked_at=datetime.fromisoformat(row["checked_at"]),
         )

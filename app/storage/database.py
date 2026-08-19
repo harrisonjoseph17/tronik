@@ -4,7 +4,11 @@ Stage 1 added `markets` (current state per market) and `market_snapshots`
 (append-only history). Stage 2 adds `features` and `analyses` - every raw
 input and derived value from the feature/probability/edge/risk-gate/scoring
 pipeline is stored so an analysis can be reproduced later without re-fetching
-anything. Later stages add signals/paper_trades/etc. as those are built.
+anything. `resolutions` (added after Stage 2) records what a market actually
+resolved to, so `analyses` rows can eventually be checked against real
+outcomes - joined on market_id, no FK added to analyses since it's a
+time-series table written before a market resolves. Later stages add
+signals/paper_trades/etc. as those are built.
 """
 
 from __future__ import annotations
@@ -121,6 +125,18 @@ CREATE TABLE IF NOT EXISTS analyses (
 CREATE INDEX IF NOT EXISTS idx_analyses_market_id      ON analyses(market_id);
 CREATE INDEX IF NOT EXISTS idx_analyses_computed_at    ON analyses(computed_at);
 CREATE INDEX IF NOT EXISTS idx_analyses_classification ON analyses(classification);
+
+CREATE TABLE IF NOT EXISTS resolutions (
+    market_id               TEXT PRIMARY KEY,
+    resolution_status        TEXT NOT NULL,
+    resolved_at               TEXT,
+    winning_outcome_index      INTEGER,
+    winning_outcome             TEXT,
+    raw_resolution_json          TEXT NOT NULL,
+    checked_at                    TEXT NOT NULL,
+    FOREIGN KEY (market_id) REFERENCES markets(market_id)
+);
+CREATE INDEX IF NOT EXISTS idx_resolutions_status ON resolutions(resolution_status);
 """
 
 
