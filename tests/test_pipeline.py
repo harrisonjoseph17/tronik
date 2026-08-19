@@ -66,7 +66,7 @@ def _healthy_market(id_: str) -> Market:
         id=id_,
         question="Will BTC be up?",
         category="crypto",
-        subcategory="btc_updown",
+        subcategory="btc_up_down",
         mid_price=0.55,
         liquidity=5000.0,
         spread=0.02,
@@ -273,13 +273,42 @@ async def test_other_category_markets_are_not_considered(config, db):
 
 
 @pytest.mark.asyncio
+async def test_non_target_subcategory_within_a_target_category_is_ignored(config, db):
+    """A market categorized as sports/football (a real, non-target
+    subcategory - e.g. from a stale prior scan, per the acceptance
+    criteria that old categories are not migrated) must NOT be analyzed
+    just because "sports" itself is a target top-level category - only
+    sports/basketball is."""
+    market_repo = MarketRepository(db)
+    try:
+        football_market = _healthy_market("m8")
+        football_market.category = "sports"
+        football_market.subcategory = "football"
+        market_repo.upsert_market(football_market)
+        _seed_snapshots(market_repo, football_market, count=5, span_hours=3.0, price_change=0.40)
+    finally:
+        market_repo.close()
+
+    clob = _StubClob()
+    summary = await run_analysis_once(config, db, clob=clob)
+
+    assert summary.markets_considered == 0
+    assert clob.calls == []  # never fetched - excluded before feature/CLOB work
+
+
+@pytest.mark.asyncio
 async def test_multiple_markets_across_categories(config, db):
     market_repo = MarketRepository(db)
     try:
-        for i, category in enumerate(["politics", "crypto", "sports"]):
+        pairs = [
+            ("politics", "elon_musk"),
+            ("crypto", "btc_up_down"),
+            ("sports", "basketball"),
+        ]
+        for i, (category, subcategory) in enumerate(pairs):
             market = _healthy_market(f"m{i}")
             market.category = category
-            market.subcategory = "x"
+            market.subcategory = subcategory
             market_repo.upsert_market(market)
             _seed_snapshots(market_repo, market, count=5, span_hours=3.0, price_change=0.40)
     finally:
@@ -288,3 +317,9 @@ async def test_multiple_markets_across_categories(config, db):
     summary = await run_analysis_once(config, db, clob=_StubClob())
     assert summary.markets_considered == 3
     assert summary.scored == 3
+    assert summary.by_target_category == {
+        "politics/elon_musk": 1,
+        "politics/white_house": 0,
+        "crypto/btc_up_down": 1,
+        "sports/basketball": 1,
+    }

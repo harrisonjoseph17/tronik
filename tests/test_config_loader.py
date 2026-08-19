@@ -11,11 +11,17 @@ def test_load_config_from_real_files():
     assert config.filters.min_liquidity == 1000.0
     assert config.filters.max_spread == 0.10
     assert config.db_path == Path("data/polymarket.db")
-    assert len(config.category_rules) == 5
+    assert len(config.category_rules) == 4
     categories = {(r.category, r.subcategory) for r in config.category_rules}
-    assert ("politics", "elon_musk_tweets") in categories
-    assert ("crypto", "btc_updown") in categories
-    assert ("sports", "football") in categories
+    assert ("politics", "elon_musk") in categories
+    assert ("politics", "white_house") in categories
+    assert ("crypto", "btc_up_down") in categories
+    assert ("sports", "basketball") in categories
+    assert config.target_subcategories == {
+        "politics": frozenset({"elon_musk", "white_house"}),
+        "crypto": frozenset({"btc_up_down"}),
+        "sports": frozenset({"basketball"}),
+    }
 
 
 def test_load_config_missing_files_uses_defaults(tmp_path: Path):
@@ -67,3 +73,24 @@ def test_load_config_partial_analysis_section_uses_defaults_for_missing_keys(tmp
     config = load_config(profile_path=profile_path, markets_path=tmp_path / "missing.yaml")
     assert config.analysis.risk_gate_min_edge == 0.10
     assert config.analysis.compound_min_score == 60.0  # default preserved
+
+
+def test_load_config_target_subcategories_missing_uses_narrow_default(tmp_path: Path):
+    config = load_config(
+        profile_path=tmp_path / "does_not_exist.yaml",
+        markets_path=tmp_path / "also_missing.yaml",
+    )
+    assert config.target_subcategories == {
+        "politics": frozenset({"elon_musk", "white_house"}),
+        "crypto": frozenset({"btc_up_down"}),
+        "sports": frozenset({"basketball"}),
+    }
+
+
+def test_load_config_target_subcategories_custom_override(tmp_path: Path):
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(
+        "target_subcategories:\n  crypto:\n    - btc_up_down\n"
+    )
+    config = load_config(profile_path=profile_path, markets_path=tmp_path / "missing.yaml")
+    assert config.target_subcategories == {"crypto": frozenset({"btc_up_down"})}

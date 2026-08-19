@@ -6,8 +6,12 @@ ESTIMATE -> EDGE -> HARD RISK GATE -> TRADE SCORE -> CLASSIFICATION
 Discovery and market-state persistence are Stage 1's scanner.py - this
 module reads what's already in markets/market_snapshots (the "included"
 subset: filter_reason IS NULL, i.e. markets Stage 1's filters didn't
-exclude) for the three target categories, and writes one features row plus
-one analyses row per market analyzed.
+exclude) for the configured (category, subcategory) target universe
+(config.target_subcategories - see app/config/loader.py), and writes one
+features row plus one analyses row per market analyzed. This target-universe
+filter is a DB query (list_markets(category=, subcategory=, ...)), so a
+market outside the target universe never gets loaded in the first place -
+it costs nothing beyond what Stage 1 already spent on it.
 
 A live CLOB order-book fetch (app/analysis/order_book.py) happens for every
 market that passes the data quality gate - not before, so markets that
@@ -42,12 +46,11 @@ from app.storage.repositories import AnalysisRepository, FeatureRepository, Mark
 
 logger = logging.getLogger(__name__)
 
-TARGET_CATEGORIES = ("politics", "crypto", "sports")
-
 
 @dataclass
 class AnalysisSummary:
     markets_considered: int = 0
+    by_target_category: dict[str, int] = field(default_factory=dict)
     quality_gate_failed: int = 0
     risk_gate_failed: int = 0
     scored: int = 0
@@ -74,15 +77,17 @@ async def run_analysis_once(
     feature_repo = FeatureRepository(db)
     analysis_repo = AnalysisRepository(db)
     try:
-        candidates = []
-        for category in TARGET_CATEGORIES:
-            candidates.extend(
-                market_repo.list_markets(
+        candidates: list = []
+        for category, subcategories in config.target_subcategories.items():
+            for subcategory in sorted(subcategories):
+                matches = market_repo.list_markets(
                     category=category,
+                    subcategory=subcategory,
                     included_only=True,
                     limit=config.analysis.max_markets_per_category,
                 )
-            )
+                candidates.extend(matches)
+                summary.by_target_category[f"{category}/{subcategory}"] = len(matches)
         summary.markets_considered = len(candidates)
 
         for market in candidates:
@@ -162,9 +167,10 @@ async def run_analysis_once(
 
     summary.elapsed_seconds = round(time.monotonic() - start, 2)
     logger.info(
-        "analysis complete: considered=%d quality_gate_failed=%d risk_gate_failed=%d "
-        "scored=%d classifications=%s elapsed=%.2fs",
+        "analysis complete: target_markets=%d by_target_category=%s quality_gate_failed=%d "
+        "risk_gate_failed=%d scored=%d classifications=%s elapsed=%.2fs",
         summary.markets_considered,
+        summary.by_target_category,
         summary.quality_gate_failed,
         summary.risk_gate_failed,
         summary.scored,

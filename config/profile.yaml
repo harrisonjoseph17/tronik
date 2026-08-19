@@ -24,6 +24,23 @@ avoid:
   - ambiguous_resolution
   - unsupported_claims
 
+# Analysis-universe allowlist: only these (category, subcategory) pairs are
+# fed into the Stage 2 pipeline (features/CLOB/scoring/classification).
+# config/markets.yaml can define more classification rules than this without
+# expanding what actually gets analyzed - this is the deliberate narrowing
+# step, kept separate from the keyword rules themselves. A missing/malformed
+# section here falls back to this same set of four (see
+# app.config.loader.DEFAULT_TARGET_SUBCATEGORIES), so misconfiguration fails
+# toward the narrow universe, not the broad one.
+target_subcategories:
+  politics:
+    - elon_musk
+    - white_house
+  crypto:
+    - btc_up_down
+  sports:
+    - basketball
+
 # Stage 1 discovery/filter thresholds. These describe the analysis universe,
 # not hard trading rules - markets outside these thresholds are still stored
 # (see filter_reason on each market) so later stages can revisit the decision.

@@ -158,7 +158,11 @@ double-checked, runs the full discovery pipeline, and makes one CLOB
   target keyword rule is stored as `category="other"`,
   `subcategory="uncategorized"` rather than being excluded.
 - **Category rules live in YAML, not Python.** `config/markets.yaml` can be
-  extended (e.g. more football competitions) without touching code.
+  extended with more classification rules without touching code. What
+  actually gets analyzed is a separate, narrower allowlist -
+  `target_subcategories` in `config/profile.yaml` - currently exactly four
+  families: politics/elon_musk, politics/white_house, crypto/btc_up_down,
+  sports/basketball.
 - **No heavyweight infrastructure.** SQLite, no Docker/Kubernetes/Redis/
   Postgres, designed to run comfortably on a ~2GB VPS.
 

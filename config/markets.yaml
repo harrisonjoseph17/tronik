@@ -1,70 +1,73 @@
 # Category / subcategory keyword rules used by app/polymarket/categorize.py.
 # Matching is a simple case-insensitive substring match against the market
-# question + parent event title + event tags. Deliberately simple for Stage 1
-# (no NER) - tune these lists once the live smoke test shows real Gamma
-# question phrasing. Markets that match nothing are still stored, tagged
-# category="other", subcategory="uncategorized" - nothing is discarded.
+# question + parent event title + event tags.
+#
+# This file defines classification rules only. Which (category, subcategory)
+# pairs actually get fed into the Stage 2 analysis pipeline is a SEPARATE,
+# narrower allowlist: config/profile.yaml's `target_subcategories`. Markets
+# that match nothing here are still stored, tagged category="other",
+# subcategory="uncategorized" - nothing discovered is discarded.
+#
+# Current target universe (see profile.yaml): politics/elon_musk,
+# politics/white_house, crypto/btc_up_down, sports/basketball.
 
 categories:
   politics:
-    elon_musk_tweets:
+    elon_musk:
+      # Avoid bare "elon" or "musk" alone - too broad on their own per the
+      # narrowing requirements. Require the pairing or an explicit
+      # posting-context phrase instead.
       keywords:
         - "elon musk"
         - "elon tweet"
+        - "elon post"
         - "@elonmusk"
-        - "musk post"
         - "musk tweet"
-    white_house_tweets:
+        - "musk tweets"
+        - "musk post"
+        - "musk posts"
+    white_house:
       keywords:
+        - "white house"
         - "white house tweet"
         - "white house post"
+        - "white house tweets"
+        - "white house posts"
         - "@whitehouse"
         - "potus tweet"
         - "potus post"
-    ukraine_president_tweets:
-      keywords:
-        - "zelensky tweet"
-        - "zelenskyy tweet"
-        - "zelensky post"
-        - "zelenskyy post"
-        - "@zelenskyyua"
-        - "president of ukraine"
 
   crypto:
-    btc_updown:
+    btc_up_down:
+      # Bitcoin/BTC-specific only - deliberately no generic crypto terms so
+      # ETH/SOL/etc. markets never match this rule.
       keywords:
         - "bitcoin up or down"
         - "btc up or down"
         - "will bitcoin"
         - "will btc"
-        - "bitcoin price"
-        - "btc price"
+        - "bitcoin price up"
+        - "bitcoin price down"
+        - "btc price up"
+        - "btc price down"
         - "bitcoin above"
         - "bitcoin below"
+        - "bitcoin higher"
+        - "bitcoin lower"
+        - "btc above"
+        - "btc below"
+        - "btc higher"
+        - "btc lower"
 
   sports:
-    football:
-      # Broad, competition-name-based coverage rather than hard-coded per-league
-      # logic in Python - extend this list as new competitions come up.
+    basketball:
+      # Basketball-specific terms only - no generic "sports"/"league"/"vs"
+      # catch-alls, so football/tennis/baseball/hockey/etc. never match.
       keywords:
-        - "premier league"
-        - "champions league"
-        - "europa league"
-        - "conference league"
-        - "la liga"
-        - "serie a"
-        - "bundesliga"
-        - "ligue 1"
-        - "world cup"
-        - "euro 2"
-        - "european championship"
-        - "copa america"
-        - "copa libertadores"
-        - "mls"
-        - "fa cup"
-        - "efl cup"
-        - "carabao cup"
-        - "soccer"
-        - "football match"
-        - " vs. "
-        - " fc "
+        - "basketball"
+        - "nba"
+        - "wnba"
+        - "ncaa basketball"
+        - "ncaab"
+        - "college basketball"
+        - "euroleague"

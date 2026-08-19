@@ -18,6 +18,18 @@ from app.polymarket.categorize import CategoryRule, load_category_rules
 DEFAULT_PROFILE_PATH = Path("config/profile.yaml")
 DEFAULT_MARKETS_PATH = Path("config/markets.yaml")
 
+# Analysis-universe allowlist: (category, subcategory) pairs fed into Stage
+# 2. config/markets.yaml can define classification rules beyond this without
+# expanding what actually gets analyzed - this is the deliberate narrowing
+# step. Used as the default when profile.yaml has no target_subcategories
+# section, so a missing/malformed config fails toward the narrow universe,
+# not the broad one.
+DEFAULT_TARGET_SUBCATEGORIES: dict[str, frozenset[str]] = {
+    "politics": frozenset({"elon_musk", "white_house"}),
+    "crypto": frozenset({"btc_up_down"}),
+    "sports": frozenset({"basketball"}),
+}
+
 
 @dataclass
 class FilterSettings:
@@ -80,6 +92,10 @@ class AppConfig:
     filters: FilterSettings = field(default_factory=FilterSettings)
     analysis: AnalysisSettings = field(default_factory=AnalysisSettings)
     category_rules: list[CategoryRule] = field(default_factory=list)
+    # (category, subcategory) allowlist - see DEFAULT_TARGET_SUBCATEGORIES.
+    target_subcategories: dict[str, frozenset[str]] = field(
+        default_factory=lambda: dict(DEFAULT_TARGET_SUBCATEGORIES)
+    )
     db_path: Path = Path("data/polymarket.db")
     log_level: str = "INFO"
 
@@ -205,6 +221,15 @@ def load_config(
 
     category_rules = load_category_rules(markets_path) if markets_path.exists() else []
 
+    target_subcategories_raw = profile.get("target_subcategories")
+    if target_subcategories_raw:
+        target_subcategories = {
+            str(category): frozenset(str(sub) for sub in (subs or []))
+            for category, subs in target_subcategories_raw.items()
+        }
+    else:
+        target_subcategories = dict(DEFAULT_TARGET_SUBCATEGORIES)
+
     db_path = Path(os.environ.get("DB_PATH", storage_raw.get("db_path", "data/polymarket.db")))
     log_level = os.environ.get("LOG_LEVEL", logging_raw.get("level", "INFO"))
 
@@ -212,6 +237,7 @@ def load_config(
         filters=filters,
         analysis=analysis,
         category_rules=category_rules,
+        target_subcategories=target_subcategories,
         db_path=db_path,
         log_level=log_level,
     )

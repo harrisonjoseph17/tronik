@@ -135,6 +135,7 @@ class MarketRepository:
         self,
         *,
         category: str | None = None,
+        subcategory: str | None = None,
         status: str | None = None,
         included_only: bool = False,
         limit: int = 100,
@@ -144,6 +145,9 @@ class MarketRepository:
         if category is not None:
             query += " AND category = ?"
             params.append(category)
+        if subcategory is not None:
+            query += " AND subcategory = ?"
+            params.append(subcategory)
         if status is not None:
             query += " AND status = ?"
             params.append(status)
