@@ -11,8 +11,11 @@ ExecStart=/root/tronik/scripts/run_scan_and_analyze.sh
 # Hard cap so a hung run can't consume resources indefinitely on a small
 # VPS. app/polymarket/client.py's own bounded retry/backoff should already
 # prevent this; this is a cheap second layer, not the primary defense.
+# Raised from 512M after a live run hit that cap exactly and spilled
+# ~57.5M into swap (systemd-reported "512M memory peak, 57.5M memory swap
+# peak") - real observed working set is ~570M, not a guess.
 TimeoutStartSec=600
-MemoryMax=512M
+MemoryMax=896M
 # No Restart= - this is a oneshot service fired by a timer, not a
 # long-running daemon. A failed run's natural retry is the timer's next
 # scheduled firing, not an immediate systemd-managed restart.
