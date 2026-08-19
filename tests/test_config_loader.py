@@ -13,12 +13,12 @@ def test_load_config_from_real_files():
     assert config.db_path == Path("data/polymarket.db")
     assert len(config.category_rules) == 4
     categories = {(r.category, r.subcategory) for r in config.category_rules}
-    assert ("politics", "elon_musk") in categories
-    assert ("politics", "white_house") in categories
+    assert ("politics", "elon_musk_tweets") in categories
+    assert ("politics", "white_house_tweets") in categories
     assert ("crypto", "btc_up_down") in categories
     assert ("sports", "basketball") in categories
     assert config.target_subcategories == {
-        "politics": frozenset({"elon_musk", "white_house"}),
+        "politics": frozenset({"elon_musk_tweets", "white_house_tweets"}),
         "crypto": frozenset({"btc_up_down"}),
         "sports": frozenset({"basketball"}),
     }
@@ -81,7 +81,7 @@ def test_load_config_target_subcategories_missing_uses_narrow_default(tmp_path: 
         markets_path=tmp_path / "also_missing.yaml",
     )
     assert config.target_subcategories == {
-        "politics": frozenset({"elon_musk", "white_house"}),
+        "politics": frozenset({"elon_musk_tweets", "white_house_tweets"}),
         "crypto": frozenset({"btc_up_down"}),
         "sports": frozenset({"basketball"}),
     }

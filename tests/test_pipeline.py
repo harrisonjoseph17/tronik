@@ -301,7 +301,7 @@ async def test_multiple_markets_across_categories(config, db):
     market_repo = MarketRepository(db)
     try:
         pairs = [
-            ("politics", "elon_musk"),
+            ("politics", "elon_musk_tweets"),
             ("crypto", "btc_up_down"),
             ("sports", "basketball"),
         ]
@@ -318,8 +318,8 @@ async def test_multiple_markets_across_categories(config, db):
     assert summary.markets_considered == 3
     assert summary.scored == 3
     assert summary.by_target_category == {
-        "politics/elon_musk": 1,
-        "politics/white_house": 0,
+        "politics/elon_musk_tweets": 1,
+        "politics/white_house_tweets": 0,
         "crypto/btc_up_down": 1,
         "sports/basketball": 1,
     }

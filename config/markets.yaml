@@ -8,34 +8,48 @@
 # that match nothing here are still stored, tagged category="other",
 # subcategory="uncategorized" - nothing discovered is discarded.
 #
-# Current target universe (see profile.yaml): politics/elon_musk,
-# politics/white_house, crypto/btc_up_down, sports/basketball.
+# Current target universe (see profile.yaml): politics/elon_musk_tweets,
+# politics/white_house_tweets, crypto/btc_up_down, sports/basketball.
 
 categories:
   politics:
-    elon_musk:
-      # Avoid bare "elon" or "musk" alone - too broad on their own per the
-      # narrowing requirements. Require the pairing or an explicit
-      # posting-context phrase instead.
+    elon_musk_tweets:
+      # Posting/tweet-context only - a market merely mentioning Elon Musk
+      # (e.g. "Will Elon Musk buy X?", "Will Elon Musk become CEO of X?")
+      # must NOT match. No bare "elon musk" pairing.
       keywords:
-        - "elon musk"
+        - "elon musk tweet"
+        - "elon musk tweets"
+        - "elon musk post"
+        - "elon musk posts"
         - "elon tweet"
+        - "elon tweets"
         - "elon post"
-        - "@elonmusk"
+        - "elon posts"
         - "musk tweet"
         - "musk tweets"
         - "musk post"
         - "musk posts"
-    white_house:
+        - "posts will elon musk"
+        - "tweets will elon musk"
+        - "@elonmusk"
+    white_house_tweets:
+      # Posting/tweet-context only - a market merely mentioning "White
+      # House" (press secretary appointments, personnel, policy, briefings,
+      # visits) must NOT match. No bare "white house".
       keywords:
-        - "white house"
         - "white house tweet"
-        - "white house post"
         - "white house tweets"
+        - "white house post"
         - "white house posts"
+        - "posts will the white house"
+        - "posts will white house"
+        - "tweets will the white house"
         - "@whitehouse"
         - "potus tweet"
+        - "potus tweets"
         - "potus post"
+        - "potus posts"
 
   crypto:
     btc_up_down:

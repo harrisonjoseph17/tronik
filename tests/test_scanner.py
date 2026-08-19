@@ -39,7 +39,7 @@ async def test_run_scan_once_end_to_end(tmp_path):
     try:
         elon = repo.get_market("mkt-1")
         assert elon.category == "politics"
-        assert elon.subcategory == "elon_musk"
+        assert elon.subcategory == "elon_musk_tweets"
         assert elon.filter_reason is None
 
         closed_market = repo.get_market("mkt-4")

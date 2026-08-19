@@ -34,8 +34,8 @@ avoid:
 # toward the narrow universe, not the broad one.
 target_subcategories:
   politics:
-    - elon_musk
-    - white_house
+    - elon_musk_tweets
+    - white_house_tweets
   crypto:
     - btc_up_down
   sports:

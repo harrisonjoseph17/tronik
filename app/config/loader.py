@@ -25,7 +25,7 @@ DEFAULT_MARKETS_PATH = Path("config/markets.yaml")
 # section, so a missing/malformed config fails toward the narrow universe,
 # not the broad one.
 DEFAULT_TARGET_SUBCATEGORIES: dict[str, frozenset[str]] = {
-    "politics": frozenset({"elon_musk", "white_house"}),
+    "politics": frozenset({"elon_musk_tweets", "white_house_tweets"}),
     "crypto": frozenset({"btc_up_down"}),
     "sports": frozenset({"basketball"}),
 }
