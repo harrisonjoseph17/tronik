@@ -89,10 +89,13 @@ def _find_local_active_slug() -> str | None:
         conn.close()
 
 
-async def probe_market_by_slug(gamma: GammaClient, slug: str, label: str) -> dict | None:
-    print(f"\n=== Fetching {label}: slug={slug!r} ===")
+async def probe_market_by_slug(
+    gamma: GammaClient, slug: str, label: str, *, extra_params: dict | None = None
+) -> dict | None:
+    params = {"slug": slug, **(extra_params or {})}
+    print(f"\n=== Fetching {label}: params={params} ===")
     try:
-        response = await gamma.get_markets(slug=slug)
+        response = await gamma.get_markets(**params)
     except PolymarketAPIError as exc:
         print(f"FAILED: {exc}")
         return None
@@ -106,13 +109,33 @@ async def probe_market_by_slug(gamma: GammaClient, slug: str, label: str) -> dic
         market = None
 
     if market is None:
-        print("No market returned for this slug.")
+        print("No market returned for these params.")
         return None
 
     print(f"Top-level keys ({len(market)}): {list(market.keys())}")
     _dump_full(label, market)
     _grep_keys(label, market)
     return market
+
+
+async def probe_slug_param_variants(gamma: GammaClient, slug: str) -> dict | None:
+    """The bare slug=X lookup came back empty for a market outside the
+    active&closed=false window in round 1 - test whether /markets, like
+    /events, needs an explicit closed=True/archived=True to see it."""
+    print(f"\n=== Testing param variants for a market that returned empty: slug={slug!r} ===")
+    variants = [
+        {},
+        {"closed": True},
+        {"archived": True},
+        {"closed": True, "archived": True},
+    ]
+    for extra in variants:
+        market = await probe_market_by_slug(gamma, slug, f"variant {extra}", extra_params=extra)
+        if market is not None:
+            print(f"\n*** SUCCESS with extra params: {extra} ***")
+            return market
+    print("\nAll variants returned empty for this slug - it may simply no longer exist.")
+    return None
 
 
 async def find_a_resolved_market_via_events(gamma: GammaClient) -> str | None:
@@ -138,17 +161,26 @@ async def find_a_resolved_market_via_events(gamma: GammaClient) -> str | None:
 async def main() -> None:
     gamma = GammaClient()
     try:
-        resolved_slug = _find_local_slug_from_analyses()
-        if resolved_slug:
-            print(f"Using a locally-analyzed market's slug (may or may not have resolved yet): {resolved_slug!r}")
-        else:
-            print("No local analyses found - falling back to a direct Gamma search.")
-            resolved_slug = await find_a_resolved_market_via_events(gamma)
+        local_slug = _find_local_slug_from_analyses()
+        found_market = None
+        if local_slug:
+            print(f"Using a locally-analyzed market's slug (may or may not have resolved yet): {local_slug!r}")
+            found_market = await probe_market_by_slug(gamma, local_slug, "candidate resolved/closed market")
+            if found_market is None:
+                # Bare slug= came back empty - test whether /markets, like
+                # /events, needs closed=True/archived=True explicitly.
+                found_market = await probe_slug_param_variants(gamma, local_slug)
 
-        if resolved_slug:
-            await probe_market_by_slug(gamma, resolved_slug, "candidate resolved/closed market")
-        else:
-            print("Could not find any candidate resolved market - skipping.")
+        if found_market is None:
+            print("\nFalling back to a direct Gamma search for any closed event.")
+            fallback_slug = await find_a_resolved_market_via_events(gamma)
+            if fallback_slug:
+                found_market = await probe_market_by_slug(gamma, fallback_slug, "candidate resolved/closed market (fallback)")
+                if found_market is None:
+                    found_market = await probe_slug_param_variants(gamma, fallback_slug)
+
+        if found_market is None:
+            print("Could not find any candidate resolved market via any method - skipping.")
 
         active_slug = _find_local_active_slug()
         if active_slug:
