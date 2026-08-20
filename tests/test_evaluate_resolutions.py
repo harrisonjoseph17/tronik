@@ -25,6 +25,7 @@ from scripts.evaluate_resolutions import (
     build_primary_evaluations,
     calibration_bins,
     derive_predicted_side,
+    detect_late_stage_demotions,
     run_evaluation,
     select_primary_snapshot,
     snapshot_level_report,
@@ -349,6 +350,100 @@ def test_snapshot_level_report_ignores_markets_without_a_winning_outcome():
     snapshots = [_snap(computed_at=T0)]
     result = snapshot_level_report(resolved, {"m1": snapshots})
     assert result == {}
+
+
+# --------------------------------------------------------------------------
+# detect_late_stage_demotions - the "edge converged right before resolution"
+# note, reproducing the real market 3257346 scenario: COMPOUND/WATCH for
+# hours, then NO_TRADE (insufficient_edge) on the exact primary snapshot.
+# --------------------------------------------------------------------------
+
+
+def test_detects_market_that_reached_compound_then_demoted_to_no_trade():
+    resolved_at = T0 + timedelta(hours=5)
+    snapshots = [
+        _snap(computed_at=T0, classification="COMPOUND", score=62.83),
+        _snap(computed_at=T0 + timedelta(hours=1), classification="WATCH", score=58.63),
+        # Primary snapshot: gated out right before resolution.
+        _snap(
+            computed_at=T0 + timedelta(hours=2),
+            classification="NO_TRADE",
+            score=None,
+            risk_gate_reasons=["insufficient_edge"],
+        ),
+    ]
+    resolved = [_resolved(market_id="m1", resolved_at=resolved_at, winning_outcome="Yes")]
+    evaluations, _ = build_primary_evaluations(resolved, {"m1": snapshots})
+    demotions = detect_late_stage_demotions(evaluations, {"m1": snapshots})
+
+    assert len(demotions) == 1
+    d = demotions[0]
+    assert d.market_id == "m1"
+    assert d.best_prior_classification == "COMPOUND"  # higher score than the WATCH row
+    assert d.best_prior_score == pytest.approx(62.83)
+    assert d.primary_classification == "NO_TRADE"
+    assert d.primary_reasons == ["insufficient_edge"]
+
+
+def test_market_whose_primary_is_already_compound_or_watch_is_not_flagged():
+    resolved_at = T0 + timedelta(hours=1)
+    snapshots = [_snap(computed_at=T0, classification="COMPOUND")]
+    resolved = [_resolved(market_id="m1", resolved_at=resolved_at, winning_outcome="Yes")]
+    evaluations, _ = build_primary_evaluations(resolved, {"m1": snapshots})
+    demotions = detect_late_stage_demotions(evaluations, {"m1": snapshots})
+    assert demotions == []
+
+
+def test_market_that_never_reached_compound_or_watch_is_not_flagged():
+    resolved_at = T0 + timedelta(hours=1)
+    snapshots = [_snap(computed_at=T0, classification="NO_TRADE", risk_gate_reasons=["low_liquidity"])]
+    resolved = [_resolved(market_id="m1", resolved_at=resolved_at, winning_outcome="Yes")]
+    evaluations, _ = build_primary_evaluations(resolved, {"m1": snapshots})
+    demotions = detect_late_stage_demotions(evaluations, {"m1": snapshots})
+    assert demotions == []
+
+
+def test_prior_compound_watch_snapshot_after_resolved_at_is_not_counted():
+    """A COMPOUND snapshot computed after resolved_at must never be used to
+    flag a demotion - that would be leaking future information."""
+    resolved_at = T0 + timedelta(hours=1)
+    snapshots = [
+        _snap(computed_at=T0, classification="NO_TRADE", risk_gate_reasons=["insufficient_edge"]),
+        _snap(computed_at=T0 + timedelta(hours=2), classification="COMPOUND"),  # after resolution
+    ]
+    resolved = [_resolved(market_id="m1", resolved_at=resolved_at, winning_outcome="Yes")]
+    evaluations, _ = build_primary_evaluations(resolved, {"m1": snapshots})
+    demotions = detect_late_stage_demotions(evaluations, {"m1": snapshots})
+    assert demotions == []
+
+
+def test_end_to_end_flags_late_stage_demotion_and_preserves_primary_numbers(db):
+    _seed_market(db, "m1", category="crypto")
+    _insert_analysis(
+        db, computed_at=T0, classification="COMPOUND", score=62.83, estimated_probability=0.86
+    )
+    _insert_analysis(
+        db,
+        computed_at=T0 + timedelta(hours=1),
+        classification="NO_TRADE",
+        score=None,
+        risk_gate_passed=False,
+    )
+    _insert_resolution(db, resolved_at=T0 + timedelta(hours=2), winning_outcome="Yes")
+
+    conn = sqlite3.connect(db.path)
+    conn.row_factory = sqlite3.Row
+    try:
+        report = run_evaluation(conn)
+    finally:
+        conn.close()
+
+    # Primary evaluation is still exactly 1, still NO_TRADE - the demotion
+    # note explains it, it does not change it.
+    assert "primary_evaluations_built: 1" in report
+    assert "NO_TRADE: unique_markets=1" in report
+    assert "late_stage_demotions: 1" in report
+    assert "reached COMPOUND" in report
 
 
 # --------------------------------------------------------------------------

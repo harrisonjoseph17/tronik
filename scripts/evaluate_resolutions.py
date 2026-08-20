@@ -35,6 +35,22 @@ kind of aggregation but keyed per analysis row instead of per market, so
 probability/edge drift over time is visible without ever being confused
 for the market-level (primary) numbers used for grading.
 
+Late-stage demotion note: the literal primary-snapshot rule above (last
+snapshot at or before resolved_at) can land on a market's exact moment of
+edge convergence - as a market approaches actual resolution, its own
+market_implied_probability converges toward the true outcome too, so
+adjusted_edge naturally shrinks toward zero and risk_gate.py's
+insufficient_edge check (or another gate condition) can correctly force
+NO_TRADE/AVOID in the final snapshot even though the market showed real
+COMPOUND/WATCH signal for hours beforehand. This is not a bug - it is the
+gate working as designed - but it means a 0-count for COMPOUND/WATCH at
+the primary-evaluation level can understate how often the system produced
+real earlier signal. detect_late_stage_demotions() surfaces this
+separately (which markets had a COMPOUND/WATCH snapshot at some point
+before resolution but were demoted by the time of their primary
+evaluation, and why) without changing the primary numbers themselves or
+touching any gate/scoring logic.
+
 Read-only: no writes to any table, no schema changes, no calls to
 app/analysis/*. Queries analyses/resolutions/markets directly via
 sqlite3, the same read-only-script pattern as
@@ -48,10 +64,11 @@ Run with: python scripts/evaluate_resolutions.py [--db-path PATH]
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import statistics
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -81,6 +98,8 @@ class AnalysisSnapshot:
     adjusted_edge: float | None
     score: float | None
     classification: str
+    risk_gate_reasons: list[str] = field(default_factory=list)
+    quality_gate_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -363,6 +382,64 @@ def snapshot_level_report(
     return result
 
 
+@dataclass(frozen=True)
+class LateStageDemotion:
+    """A market that showed real COMPOUND/WATCH signal at some point before
+    resolution but whose primary (last-before-resolution) snapshot had
+    already been demoted to NO_TRADE/AVOID by the time it resolved."""
+
+    market_id: str
+    best_prior_classification: str
+    best_prior_score: float | None
+    best_prior_computed_at: datetime
+    primary_classification: str
+    primary_reasons: list[str]
+
+
+def detect_late_stage_demotions(
+    evaluations: list[PrimaryEvaluation],
+    analyses_by_market: dict[str, list[AnalysisSnapshot]],
+) -> list[LateStageDemotion]:
+    """Does NOT change the primary evaluation or any of its numbers - this
+    only explains, for markets whose PRIMARY snapshot is NOT COMPOUND/WATCH,
+    whether an earlier (still pre-resolution) snapshot for that same market
+    ever was COMPOUND/WATCH, and why the primary one wasn't. Surfaces the
+    "edge converged right before resolution" pattern without touching any
+    gate/scoring logic."""
+    demotions: list[LateStageDemotion] = []
+    for evaluation in evaluations:
+        if evaluation.snapshot.classification in DETAILED_CLASSIFICATIONS:
+            continue  # primary itself is COMPOUND/WATCH - nothing to flag
+
+        prior_signal = [
+            s
+            for s in analyses_by_market.get(evaluation.market_id, [])
+            if s.classification in DETAILED_CLASSIFICATIONS
+            and s.computed_at <= evaluation.resolved_at
+            and s.computed_at < evaluation.snapshot.computed_at
+        ]
+        if not prior_signal:
+            continue
+
+        best = max(prior_signal, key=lambda s: (s.score if s.score is not None else float("-inf")))
+        reasons = list(evaluation.snapshot.risk_gate_reasons)
+        if evaluation.snapshot.quality_gate_reason:
+            reasons.append(evaluation.snapshot.quality_gate_reason)
+
+        demotions.append(
+            LateStageDemotion(
+                market_id=evaluation.market_id,
+                best_prior_classification=best.classification,
+                best_prior_score=best.score,
+                best_prior_computed_at=best.computed_at,
+                primary_classification=evaluation.snapshot.classification,
+                primary_reasons=reasons,
+            )
+        )
+
+    return demotions
+
+
 # --------------------------------------------------------------------------
 # DB-facing helpers
 # --------------------------------------------------------------------------
@@ -372,6 +449,16 @@ def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(value)
+
+
+def _parse_reasons(value: str | None) -> list[str]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
 
 
 def fetch_resolution_status_counts(conn: sqlite3.Connection) -> dict[str, int]:
@@ -406,7 +493,8 @@ def fetch_analyses_for_markets(
     for market_id in market_ids:
         rows = conn.execute(
             "SELECT market_id, computed_at, category, market_implied_probability, "
-            "estimated_probability, raw_edge, adjusted_edge, score, classification "
+            "estimated_probability, raw_edge, adjusted_edge, score, classification, "
+            "risk_gate_reasons_json, quality_gate_reason "
             "FROM analyses WHERE market_id = ? ORDER BY computed_at ASC",
             (market_id,),
         ).fetchall()
@@ -421,6 +509,8 @@ def fetch_analyses_for_markets(
                 adjusted_edge=row["adjusted_edge"],
                 score=row["score"],
                 classification=row["classification"],
+                risk_gate_reasons=_parse_reasons(row["risk_gate_reasons_json"]),
+                quality_gate_reason=row["quality_gate_reason"],
             )
             for row in rows
         ]
@@ -444,6 +534,7 @@ def render_report(
     category_stats: dict[str, CategoryStats],
     bins: list[CalibrationBin],
     snapshot_stats: dict[str, SnapshotLevelStats],
+    demotions: list[LateStageDemotion],
 ) -> str:
     lines: list[str] = []
     out = lines.append
@@ -471,6 +562,31 @@ def render_report(
     for classification in sorted(extra):
         s = classification_stats[classification]
         out(f"  {classification} (unexpected value, flagged): unique_markets={s.unique_markets}")
+    out("")
+
+    out("-- late-stage demotion note (does not change the numbers above) --")
+    out("  Markets below showed real COMPOUND/WATCH signal at some point before")
+    out("  resolution, but their PRIMARY (last-before-resolution) snapshot had")
+    out("  already been gated back to NO_TRADE/AVOID by the time they resolved -")
+    out("  typically because adjusted_edge naturally converges toward zero as the")
+    out("  market's own price catches up to the outcome. This is risk_gate.py")
+    out("  working as designed, not a bug - see the module docstring above for")
+    out("  the full explanation. The primary-evaluation numbers above are")
+    out("  unchanged; this section only explains part of why COMPOUND/WATCH")
+    out("  counts can look lower than a naive (non-market-level) join suggests.")
+    out(f"  late_stage_demotions: {len(demotions)}")
+    if demotions:
+        reason_counts: dict[str, int] = {}
+        for d in demotions:
+            for reason in (d.primary_reasons or ["(no gate reason recorded)"]):
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        out(f"  primary_reason_breakdown: {dict(sorted(reason_counts.items(), key=lambda kv: -kv[1]))}")
+        for d in demotions:
+            out(
+                f"    {d.market_id}: reached {d.best_prior_classification} "
+                f"(score={_fmt(d.best_prior_score, 2)}) at {d.best_prior_computed_at.isoformat()}, "
+                f"primary={d.primary_classification} reasons={d.primary_reasons}"
+            )
     out("")
 
     out("-- COMPOUND / WATCH detailed performance (market-level) --")
@@ -584,9 +700,17 @@ def run_evaluation(conn: sqlite3.Connection) -> str:
     category_stats = aggregate_by_category(evaluations)
     bins = calibration_bins(evaluations)
     snapshot_stats = snapshot_level_report(resolved_markets, analyses_by_market)
+    demotions = detect_late_stage_demotions(evaluations, analyses_by_market)
 
     return render_report(
-        status_counts, evaluations, excluded, classification_stats, category_stats, bins, snapshot_stats
+        status_counts,
+        evaluations,
+        excluded,
+        classification_stats,
+        category_stats,
+        bins,
+        snapshot_stats,
+        demotions,
     )
 
 
