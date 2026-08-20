@@ -274,18 +274,17 @@ async def test_other_category_markets_are_not_considered(config, db):
 
 @pytest.mark.asyncio
 async def test_non_target_subcategory_within_a_target_category_is_ignored(config, db):
-    """A market categorized as sports/football (a real, non-target
-    subcategory - e.g. from a stale prior scan, per the acceptance
-    criteria that old categories are not migrated) must NOT be analyzed
-    just because "sports" itself is a target top-level category - only
-    sports/basketball is."""
+    """A market categorized as politics/some_other_subcategory (a real,
+    non-target subcategory within a category that IS otherwise targeted)
+    must NOT be analyzed just because "politics" itself is a target
+    top-level category - only elon_musk_tweets/white_house_tweets are."""
     market_repo = MarketRepository(db)
     try:
-        football_market = _healthy_market("m8")
-        football_market.category = "sports"
-        football_market.subcategory = "football"
-        market_repo.upsert_market(football_market)
-        _seed_snapshots(market_repo, football_market, count=5, span_hours=3.0, price_change=0.40)
+        other_market = _healthy_market("m8")
+        other_market.category = "politics"
+        other_market.subcategory = "some_other_subcategory"
+        market_repo.upsert_market(other_market)
+        _seed_snapshots(market_repo, other_market, count=5, span_hours=3.0, price_change=0.40)
     finally:
         market_repo.close()
 
@@ -297,13 +296,39 @@ async def test_non_target_subcategory_within_a_target_category_is_ignored(config
 
 
 @pytest.mark.asyncio
+async def test_sports_basketball_is_excluded_from_analysis(config, db):
+    """Requirement #17 (scope reduction): sports/basketball was removed
+    from target_subcategories entirely. The categorize rule for it still
+    exists in config/markets.yaml (untouched, per the minimal-footprint
+    design), so a basketball market can still be discovered/tagged, but it
+    must never be analyzed now that "sports" isn't a target category at
+    all - not even the narrower "wrong subcategory within a target
+    category" case, since the whole category is gone from the allowlist."""
+    market_repo = MarketRepository(db)
+    try:
+        basketball_market = _healthy_market("m9")
+        basketball_market.category = "sports"
+        basketball_market.subcategory = "basketball"
+        market_repo.upsert_market(basketball_market)
+        _seed_snapshots(market_repo, basketball_market, count=5, span_hours=3.0, price_change=0.40)
+    finally:
+        market_repo.close()
+
+    clob = _StubClob()
+    summary = await run_analysis_once(config, db, clob=clob)
+
+    assert summary.markets_considered == 0
+    assert clob.calls == []
+    assert "sports/basketball" not in summary.by_target_category
+
+
+@pytest.mark.asyncio
 async def test_multiple_markets_across_categories(config, db):
     market_repo = MarketRepository(db)
     try:
         pairs = [
             ("politics", "elon_musk_tweets"),
             ("crypto", "btc_up_down"),
-            ("sports", "basketball"),
         ]
         for i, (category, subcategory) in enumerate(pairs):
             market = _healthy_market(f"m{i}")
@@ -315,11 +340,10 @@ async def test_multiple_markets_across_categories(config, db):
         market_repo.close()
 
     summary = await run_analysis_once(config, db, clob=_StubClob())
-    assert summary.markets_considered == 3
-    assert summary.scored == 3
+    assert summary.markets_considered == 2
+    assert summary.scored == 2
     assert summary.by_target_category == {
         "politics/elon_musk_tweets": 1,
         "politics/white_house_tweets": 0,
         "crypto/btc_up_down": 1,
-        "sports/basketball": 1,
     }

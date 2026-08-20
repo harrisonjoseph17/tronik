@@ -20,7 +20,6 @@ def test_load_config_from_real_files():
     assert config.target_subcategories == {
         "politics": frozenset({"elon_musk_tweets", "white_house_tweets"}),
         "crypto": frozenset({"btc_up_down"}),
-        "sports": frozenset({"basketball"}),
     }
 
 
@@ -83,7 +82,6 @@ def test_load_config_target_subcategories_missing_uses_narrow_default(tmp_path: 
     assert config.target_subcategories == {
         "politics": frozenset({"elon_musk_tweets", "white_house_tweets"}),
         "crypto": frozenset({"btc_up_down"}),
-        "sports": frozenset({"basketball"}),
     }
 
 

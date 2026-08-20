@@ -259,10 +259,14 @@ def test_generic_congress_market_is_not_categorized():
     assert _categorize("Will the Senate pass the bill this month?") == NOT_CATEGORIZED
 
 
-# ---- regression: exactly four target subcategories are active ----
+# ---- regression: exactly three target subcategories are active ----
+# (sports/basketball removed - scope reduction, requirement #17. The
+# categorize rule for it still exists in markets.yaml - see
+# test_no_zelenskyy_or_football_rule_exists_in_markets_yaml below - it's
+# just no longer in the analysis-target allowlist.)
 
 
-def test_only_four_target_subcategories_are_configured():
+def test_only_three_target_subcategories_are_configured():
     config = load_config(
         profile_path=Path("config/profile.yaml"), markets_path=Path("config/markets.yaml")
     )
@@ -275,8 +279,8 @@ def test_only_four_target_subcategories_are_configured():
         ("politics", "elon_musk_tweets"),
         ("politics", "white_house_tweets"),
         ("crypto", "btc_up_down"),
-        ("sports", "basketball"),
     }
+    assert ("sports", "basketball") not in pairs
 
 
 def test_no_zelenskyy_or_football_rule_exists_in_markets_yaml():

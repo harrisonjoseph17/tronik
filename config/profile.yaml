@@ -29,17 +29,21 @@ avoid:
 # config/markets.yaml can define more classification rules than this without
 # expanding what actually gets analyzed - this is the deliberate narrowing
 # step, kept separate from the keyword rules themselves. A missing/malformed
-# section here falls back to this same set of four (see
+# section here falls back to this same set of three (see
 # app.config.loader.DEFAULT_TARGET_SUBCATEGORIES), so misconfiguration fails
 # toward the narrow universe, not the broad one.
+#
+# Sports/basketball was removed (scope reduction, requirement #17) - the
+# categorize rule for it still exists in config/markets.yaml (harmless,
+# never queried since it's not a key here), so a basketball market still
+# gets tagged category=sports/subcategory=basketball during discovery but
+# is never picked up by analyze.
 target_subcategories:
   politics:
     - elon_musk_tweets
     - white_house_tweets
   crypto:
     - btc_up_down
-  sports:
-    - basketball
 
 # Stage 1 discovery/filter thresholds. These describe the analysis universe,
 # not hard trading rules - markets outside these thresholds are still stored

@@ -7,7 +7,7 @@ Telegram, and tracks paper-trading performance honestly before any live
 trading is ever considered.
 
 **Status: Stage 2 (discovery + feature/probability/edge/risk-gate/scoring
-pipeline, narrowed to four target market families, deployable via
+pipeline, narrowed to three target market families, deployable via
 systemd).** LLM analysis, Telegram, paper trading, and performance tracking
 are not built yet — see [Roadmap](#roadmap).
 
@@ -130,7 +130,7 @@ python main.py scan     # run one discovery cycle, prints a ScanSummary
 python main.py analyze  # run features->quality gate->probability->edge->risk gate->scoring->classification
 ```
 
-`analyze` only considers the four target `(category, subcategory)` pairs
+`analyze` only considers the three target `(category, subcategory)` pairs
 configured in `config/profile.yaml`'s `target_subcategories` (see
 [Architecture](#architecture-current)) - see [Deployment](#deployment) to
 run both commands automatically on a schedule instead of by hand.
@@ -222,12 +222,14 @@ only ever looks at markets not already marked resolved.
 - **Category rules live in YAML, not Python.** `config/markets.yaml` can be
   extended with more classification rules without touching code. What
   actually gets analyzed is a separate, narrower allowlist -
-  `target_subcategories` in `config/profile.yaml` - currently exactly four
+  `target_subcategories` in `config/profile.yaml` - currently exactly three
   families: politics/elon_musk_tweets, politics/white_house_tweets,
-  crypto/btc_up_down, sports/basketball. The two politics rules are
-  deliberately posting/tweet-context only (e.g. "White House tweet about
-  X?") - a market merely mentioning "White House" or "Elon Musk" (press
-  secretary appointments, CEO news, etc.) does not match.
+  crypto/btc_up_down. The two politics rules are deliberately posting/tweet-
+  context only (e.g. "White House tweet about X?") - a market merely
+  mentioning "White House" or "Elon Musk" (press secretary appointments,
+  CEO news, etc.) does not match. Sports/basketball was removed from the
+  target allowlist (scope reduction); its categorize rule is still defined
+  in `config/markets.yaml` but is no longer analyzed.
 - **No heavyweight infrastructure.** SQLite, no Docker/Kubernetes/Redis/
   Postgres, designed to run comfortably on a ~2GB VPS.
 

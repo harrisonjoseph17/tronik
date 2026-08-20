@@ -9,7 +9,11 @@
 # subcategory="uncategorized" - nothing discovered is discarded.
 #
 # Current target universe (see profile.yaml): politics/elon_musk_tweets,
-# politics/white_house_tweets, crypto/btc_up_down, sports/basketball.
+# politics/white_house_tweets, crypto/btc_up_down. The sports/basketball
+# rule below is intentionally kept even though it's no longer in the
+# target allowlist (scope reduction, requirement #17) - a basketball
+# market still gets tagged category=sports/subcategory=basketball during
+# discovery, it's just never fed into analyze.
 
 categories:
   politics:

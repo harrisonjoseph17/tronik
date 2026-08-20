@@ -24,10 +24,12 @@ DEFAULT_MARKETS_PATH = Path("config/markets.yaml")
 # step. Used as the default when profile.yaml has no target_subcategories
 # section, so a missing/malformed config fails toward the narrow universe,
 # not the broad one.
+#
+# Sports/basketball removed (scope reduction, requirement #17) - see the
+# matching comment in config/profile.yaml.
 DEFAULT_TARGET_SUBCATEGORIES: dict[str, frozenset[str]] = {
     "politics": frozenset({"elon_musk_tweets", "white_house_tweets"}),
     "crypto": frozenset({"btc_up_down"}),
-    "sports": frozenset({"basketball"}),
 }
 
 
