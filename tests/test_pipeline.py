@@ -9,7 +9,7 @@ from app.polymarket.client import PolymarketAPIError
 from app.storage.analysis_models import DataQualityState
 from app.storage.database import Database
 from app.storage.models import Market
-from app.storage.repositories import AnalysisRepository, MarketRepository
+from app.storage.repositories import AnalysisRepository, MarketRepository, SignalJournalRepository
 
 NOW = datetime.now(timezone.utc)
 
@@ -347,3 +347,160 @@ async def test_multiple_markets_across_categories(config, db):
         "politics/white_house_tweets": 0,
         "crypto/btc_up_down": 1,
     }
+
+
+# --------------------------------------------------------------------------
+# Signal journal (requirement #18) - record each market's FIRST actionable
+# COMPOUND/WATCH signal, never overwritten by later analyze cycles.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def compound_forcing_config() -> AppConfig:
+    """Same baseline as `config`, but with compound_min_score/
+    asymmetric_edge_threshold tuned so that ANY market that clears the risk
+    gate deterministically lands on COMPOUND - avoids depending on exact
+    score/edge thresholds tied to price_change, which the plain `config`
+    fixture doesn't pin down (existing tests assert classification is one
+    of several possible values for the same seeding recipe)."""
+    return AppConfig(
+        filters=FilterSettings(),
+        analysis=AnalysisSettings(
+            min_snapshots_for_history=3,
+            min_history_hours=1.0,
+            risk_gate_max_spread=0.08,
+            risk_gate_min_liquidity=2000.0,
+            risk_gate_min_hours_to_resolution=4.0,
+            risk_gate_min_edge=0.05,
+            momentum_adjustment_weight=0.3,
+            max_probability_adjustment=0.15,
+            compound_min_score=0.0,
+            watch_min_score=0.0,
+            asymmetric_edge_threshold=999.0,  # never trips - keeps COMPOUND, not ASYMMETRIC
+        ),
+        category_rules=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_first_compound_signal_is_recorded_in_journal(compound_forcing_config, db):
+    market_repo = MarketRepository(db)
+    try:
+        market = _healthy_market("m10")
+        market_repo.upsert_market(market)
+        _seed_snapshots(market_repo, market, count=5, span_hours=3.0, price_change=0.40)
+    finally:
+        market_repo.close()
+
+    summary = await run_analysis_once(compound_forcing_config, db, clob=_StubClob())
+    assert summary.classification_counts == {"COMPOUND": 1}
+    assert summary.first_signals_recorded == 1
+
+    analysis_repo = AnalysisRepository(db)
+    journal_repo = SignalJournalRepository(db)
+    try:
+        record = analysis_repo.list_for_market("m10")[0]
+        entry = journal_repo.get("m10")
+    finally:
+        analysis_repo.close()
+        journal_repo.close()
+
+    assert entry is not None
+    assert entry.classification == "COMPOUND"
+    assert entry.category == "crypto"
+    assert entry.subcategory == "btc_up_down"
+    assert entry.market_implied_probability == pytest.approx(record.market_implied_probability)
+    assert entry.estimated_probability == pytest.approx(record.estimated_probability)
+    assert entry.adjusted_edge == pytest.approx(record.adjusted_edge)
+    assert entry.score == pytest.approx(record.score)
+
+
+@pytest.mark.asyncio
+async def test_repeated_analyze_cycles_do_not_overwrite_first_signal(compound_forcing_config, db):
+    """Directly proves requirement #18's core ask: running analyze again
+    (new snapshot data that would otherwise produce different numbers)
+    must not change the journal row written by the first cycle."""
+    market_repo = MarketRepository(db)
+    try:
+        market = _healthy_market("m11")
+        market_repo.upsert_market(market)
+        _seed_snapshots(market_repo, market, count=5, span_hours=3.0, price_change=0.40)
+    finally:
+        market_repo.close()
+
+    first_summary = await run_analysis_once(compound_forcing_config, db, clob=_StubClob())
+    assert first_summary.first_signals_recorded == 1
+
+    journal_repo = SignalJournalRepository(db)
+    try:
+        first_entry = journal_repo.get("m11")
+    finally:
+        journal_repo.close()
+
+    # A second cycle - seed a very different price move, which would
+    # produce different estimated_probability/edge/score if it were free
+    # to overwrite.
+    market_repo = MarketRepository(db)
+    try:
+        market = _healthy_market("m11")
+        _seed_snapshots(market_repo, market, count=5, span_hours=3.0, price_change=-0.30)
+    finally:
+        market_repo.close()
+
+    second_summary = await run_analysis_once(compound_forcing_config, db, clob=_StubClob())
+    assert second_summary.first_signals_recorded == 0  # already journaled - no-op
+
+    journal_repo = SignalJournalRepository(db)
+    try:
+        second_entry = journal_repo.get("m11")
+    finally:
+        journal_repo.close()
+
+    assert second_entry.first_signal_at == first_entry.first_signal_at
+    assert second_entry.estimated_probability == pytest.approx(first_entry.estimated_probability)
+    assert second_entry.adjusted_edge == pytest.approx(first_entry.adjusted_edge)
+    assert second_entry.score == pytest.approx(first_entry.score)
+
+
+@pytest.mark.asyncio
+async def test_no_trade_market_is_never_journaled(config, db):
+    market_repo = MarketRepository(db)
+    try:
+        market = _healthy_market("m12")
+        market_repo.upsert_market(market)
+        _seed_snapshots(market_repo, market, count=5, span_hours=3.0)  # no price_change -> wide_spread -> NO_TRADE
+    finally:
+        market_repo.close()
+
+    summary = await run_analysis_once(config, db, clob=_StubClob())
+    assert summary.classification_counts == {"NO_TRADE": 1}
+    assert summary.first_signals_recorded == 0
+
+    journal_repo = SignalJournalRepository(db)
+    try:
+        entry = journal_repo.get("m12")
+    finally:
+        journal_repo.close()
+    assert entry is None
+
+
+@pytest.mark.asyncio
+async def test_avoid_market_is_never_journaled(config, db):
+    market_repo = MarketRepository(db)
+    try:
+        market = _healthy_market("m13")
+        market_repo.upsert_market(market)
+        # no snapshots inserted at all -> quality gate fails -> AVOID
+    finally:
+        market_repo.close()
+
+    summary = await run_analysis_once(config, db, clob=_StubClob())
+    assert summary.classification_counts == {"AVOID": 1}
+    assert summary.first_signals_recorded == 0
+
+    journal_repo = SignalJournalRepository(db)
+    try:
+        entry = journal_repo.get("m13")
+    finally:
+        journal_repo.close()
+    assert entry is None

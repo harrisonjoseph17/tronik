@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from app.analysis.classify import classify
+from app.analysis.classify import Classification, classify
 from app.analysis.edge import compute_edge
 from app.analysis.features import compute_features
 from app.analysis.order_book import SupportsGetBook, fetch_order_book_snapshot
@@ -42,7 +42,13 @@ from app.config.loader import AppConfig
 from app.polymarket.client import CLOBClient
 from app.storage.analysis_models import AnalysisRecord
 from app.storage.database import Database
-from app.storage.repositories import AnalysisRepository, FeatureRepository, MarketRepository
+from app.storage.repositories import (
+    AnalysisRepository,
+    FeatureRepository,
+    MarketRepository,
+    SignalJournalRepository,
+)
+from app.storage.signal_journal_models import SignalJournalEntry
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +61,7 @@ class AnalysisSummary:
     risk_gate_failed: int = 0
     scored: int = 0
     classification_counts: dict[str, int] = field(default_factory=dict)
+    first_signals_recorded: int = 0
     elapsed_seconds: float = 0.0
 
 
@@ -76,6 +83,7 @@ async def run_analysis_once(
     market_repo = MarketRepository(db)
     feature_repo = FeatureRepository(db)
     analysis_repo = AnalysisRepository(db)
+    signal_journal_repo = SignalJournalRepository(db)
     try:
         candidates: list = []
         for category, subcategories in config.target_subcategories.items():
@@ -157,24 +165,43 @@ async def run_analysis_once(
                     classification=classification.value,
                 )
             )
+
+            if classification in (Classification.COMPOUND, Classification.WATCH):
+                if signal_journal_repo.record_first_signal(
+                    SignalJournalEntry(
+                        market_id=market.id,
+                        first_signal_at=now,
+                        classification=classification.value,
+                        category=market.category,
+                        subcategory=market.subcategory,
+                        market_implied_probability=estimate.market_implied_probability,
+                        estimated_probability=estimate.estimated_probability,
+                        adjusted_edge=edge_result.adjusted_edge,
+                        score=score,
+                    )
+                ):
+                    summary.first_signals_recorded += 1
+
             _tally(summary, classification.value)
     finally:
         market_repo.close()
         feature_repo.close()
         analysis_repo.close()
+        signal_journal_repo.close()
         if owns_clob:
             await clob.aclose()
 
     summary.elapsed_seconds = round(time.monotonic() - start, 2)
     logger.info(
         "analysis complete: target_markets=%d by_target_category=%s quality_gate_failed=%d "
-        "risk_gate_failed=%d scored=%d classifications=%s elapsed=%.2fs",
+        "risk_gate_failed=%d scored=%d classifications=%s first_signals_recorded=%d elapsed=%.2fs",
         summary.markets_considered,
         summary.by_target_category,
         summary.quality_gate_failed,
         summary.risk_gate_failed,
         summary.scored,
         summary.classification_counts,
+        summary.first_signals_recorded,
         summary.elapsed_seconds,
     )
     return summary

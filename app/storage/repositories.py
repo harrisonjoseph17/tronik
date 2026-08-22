@@ -15,6 +15,7 @@ from app.storage.analysis_models import AnalysisRecord, DataQualityState, Featur
 from app.storage.database import Database
 from app.storage.models import Market
 from app.storage.resolution_models import Resolution, ResolutionStatus
+from app.storage.signal_journal_models import SignalJournalEntry
 
 _UPSERT_SQL = """
 INSERT INTO markets (
@@ -496,4 +497,78 @@ class ResolutionRepository:
             winning_outcome=row["winning_outcome"],
             raw_resolution_json=row["raw_resolution_json"],
             checked_at=datetime.fromisoformat(row["checked_at"]),
+        )
+
+
+_INSERT_SIGNAL_JOURNAL_SQL = """
+INSERT OR IGNORE INTO signal_journal (
+    market_id, first_signal_at, classification, category, subcategory,
+    market_implied_probability, estimated_probability, adjusted_edge, score
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+class SignalJournalRepository:
+    """Requirement #18: records each market's FIRST actionable
+    (COMPOUND/WATCH) analysis snapshot. Simpler than ResolutionRepository's
+    upsert - there is no state machine and no field ever advances after the
+    first write, not even a "last seen" timestamp. Once a market_id has a
+    row, every later call is a pure no-op."""
+
+    def __init__(self, db: Database):
+        self._conn = db.connect()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def record_first_signal(self, entry: SignalJournalEntry) -> bool:
+        """Returns True if this call actually inserted the market's first
+        signal, False if one already existed (no-op - nothing changed)."""
+        if self.get(entry.market_id) is not None:
+            return False
+
+        self._conn.execute(
+            _INSERT_SIGNAL_JOURNAL_SQL,
+            (
+                entry.market_id,
+                entry.first_signal_at.isoformat(),
+                entry.classification,
+                entry.category,
+                entry.subcategory,
+                entry.market_implied_probability,
+                entry.estimated_probability,
+                entry.adjusted_edge,
+                entry.score,
+            ),
+        )
+        self._conn.commit()
+        return True
+
+    def get(self, market_id: str) -> SignalJournalEntry | None:
+        row = self._conn.execute(
+            "SELECT * FROM signal_journal WHERE market_id = ?", (market_id,)
+        ).fetchone()
+        return self._row_to_entry(row) if row else None
+
+    def list_by_classification(
+        self, classification: str, *, limit: int = 100
+    ) -> list[SignalJournalEntry]:
+        rows = self._conn.execute(
+            "SELECT * FROM signal_journal WHERE classification = ? "
+            "ORDER BY first_signal_at DESC LIMIT ?",
+            (classification, limit),
+        ).fetchall()
+        return [self._row_to_entry(row) for row in rows]
+
+    def _row_to_entry(self, row: sqlite3.Row) -> SignalJournalEntry:
+        return SignalJournalEntry(
+            market_id=row["market_id"],
+            first_signal_at=datetime.fromisoformat(row["first_signal_at"]),
+            classification=row["classification"],
+            category=row["category"],
+            subcategory=row["subcategory"],
+            market_implied_probability=row["market_implied_probability"],
+            estimated_probability=row["estimated_probability"],
+            adjusted_edge=row["adjusted_edge"],
+            score=row["score"],
         )

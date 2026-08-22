@@ -7,8 +7,11 @@ pipeline is stored so an analysis can be reproduced later without re-fetching
 anything. `resolutions` (added after Stage 2) records what a market actually
 resolved to, so `analyses` rows can eventually be checked against real
 outcomes - joined on market_id, no FK added to analyses since it's a
-time-series table written before a market resolves. Later stages add
-signals/paper_trades/etc. as those are built.
+time-series table written before a market resolves. `signal_journal`
+(requirement #18) records each market's first-ever actionable
+(COMPOUND/WATCH) analysis snapshot, one row per market_id like
+`resolutions`, so it's joinable with `resolutions` by market_id the same
+way. Later stages add paper_trades/etc. as those are built.
 """
 
 from __future__ import annotations
@@ -137,6 +140,24 @@ CREATE TABLE IF NOT EXISTS resolutions (
     FOREIGN KEY (market_id) REFERENCES markets(market_id)
 );
 CREATE INDEX IF NOT EXISTS idx_resolutions_status ON resolutions(resolution_status);
+
+-- Requirement #18: each market's FIRST actionable (COMPOUND/WATCH)
+-- analysis snapshot, written once and never overwritten. market_id as the
+-- PK (like resolutions) makes this joinable with resolutions by market_id
+-- without any FK between the two tables themselves.
+CREATE TABLE IF NOT EXISTS signal_journal (
+    market_id                   TEXT PRIMARY KEY,
+    first_signal_at              TEXT NOT NULL,
+    classification                 TEXT NOT NULL,
+    category                        TEXT,
+    subcategory                      TEXT,
+    market_implied_probability        REAL,
+    estimated_probability                REAL,
+    adjusted_edge                          REAL,
+    score                                    REAL,
+    FOREIGN KEY (market_id) REFERENCES markets(market_id)
+);
+CREATE INDEX IF NOT EXISTS idx_signal_journal_classification ON signal_journal(classification);
 """
 
 
