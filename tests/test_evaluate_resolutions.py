@@ -14,19 +14,29 @@ import pytest
 from app.storage.analysis_models import AnalysisRecord, DataQualityState
 from app.storage.database import Database
 from app.storage.models import Market
-from app.storage.repositories import AnalysisRepository, MarketRepository, ResolutionRepository
+from app.storage.repositories import (
+    AnalysisRepository,
+    MarketRepository,
+    ResolutionRepository,
+    SignalJournalRepository,
+)
 from app.storage.resolution_models import Resolution, ResolutionStatus
+from app.storage.signal_journal_models import SignalJournalEntry
 from scripts.evaluate_resolutions import (
     AnalysisSnapshot,
     ResolvedMarket,
     aggregate_by_classification,
     aggregate_by_category,
     brier_score,
+    build_first_signal_evaluations,
     build_primary_evaluations,
+    build_signal_journal_evaluations,
     calibration_bins,
     derive_predicted_side,
     detect_late_stage_demotions,
+    fetch_signal_journal_snapshots,
     run_evaluation,
+    select_first_actionable_snapshot,
     select_primary_snapshot,
     snapshot_level_report,
 )
@@ -569,3 +579,240 @@ def test_end_to_end_two_markets_multiple_snapshots_each_report_counts_correctly(
 
     assert "primary_evaluations_built: 2" in report
     assert "WATCH: unique_markets=2" in report
+
+
+# --------------------------------------------------------------------------
+# select_first_actionable_snapshot / build_first_signal_evaluations - the
+# EARLIEST COMPOUND/WATCH snapshot per market, contrasted with
+# select_primary_snapshot (last snapshot of ANY classification) and with
+# detect_late_stage_demotions' picker (best-SCORING prior signal, not
+# necessarily earliest).
+# --------------------------------------------------------------------------
+
+
+def test_select_first_actionable_snapshot_picks_earliest_compound_or_watch():
+    resolved_at = T0 + timedelta(hours=5)
+    snapshots = [
+        _snap(computed_at=T0, classification="NO_TRADE"),
+        _snap(computed_at=T0 + timedelta(hours=1), classification="WATCH", score=50.0),
+        _snap(computed_at=T0 + timedelta(hours=2), classification="COMPOUND", score=90.0),  # higher score, later
+        _snap(computed_at=T0 + timedelta(hours=3), classification="NO_TRADE"),
+    ]
+    first = select_first_actionable_snapshot(snapshots, resolved_at)
+    assert first.computed_at == T0 + timedelta(hours=1)  # earliest, not best-scoring
+    assert first.classification == "WATCH"
+
+
+def test_select_first_actionable_snapshot_ignores_no_trade_and_avoid():
+    resolved_at = T0 + timedelta(hours=5)
+    snapshots = [
+        _snap(computed_at=T0, classification="AVOID"),
+        _snap(computed_at=T0 + timedelta(hours=1), classification="NO_TRADE"),
+    ]
+    assert select_first_actionable_snapshot(snapshots, resolved_at) is None
+
+
+def test_select_first_actionable_snapshot_never_selects_after_resolution():
+    resolved_at = T0 + timedelta(hours=1)
+    snapshots = [_snap(computed_at=T0 + timedelta(hours=2), classification="COMPOUND")]
+    assert select_first_actionable_snapshot(snapshots, resolved_at) is None
+
+
+def test_select_first_actionable_snapshot_returns_none_for_empty_input():
+    assert select_first_actionable_snapshot([], T0) is None
+
+
+def test_build_first_signal_evaluations_uses_earliest_not_last_or_best():
+    """Directly reproduces the real late-stage-demotion pattern: a market
+    reaches COMPOUND early, then gets demoted to NO_TRADE right before
+    resolution. The primary evaluation would grade the late NO_TRADE
+    snapshot; the first-signal evaluation must grade the early COMPOUND
+    one instead."""
+    resolved_at = T0 + timedelta(hours=5)
+    snapshots = [
+        _snap(computed_at=T0, classification="COMPOUND", score=62.83, estimated_probability=0.86),
+        _snap(computed_at=T0 + timedelta(hours=4, minutes=58), classification="NO_TRADE", score=None),
+    ]
+    resolved = [_resolved(market_id="m1", resolved_at=resolved_at, winning_outcome="Yes")]
+
+    primary_evaluations, _ = build_primary_evaluations(resolved, {"m1": snapshots})
+    first_signal_evaluations, excluded = build_first_signal_evaluations(resolved, {"m1": snapshots})
+
+    assert primary_evaluations[0].snapshot.classification == "NO_TRADE"  # last snapshot
+    assert first_signal_evaluations[0].snapshot.classification == "COMPOUND"  # first signal
+    assert first_signal_evaluations[0].snapshot.computed_at == T0
+    assert excluded == []
+
+
+def test_build_first_signal_evaluations_excludes_market_never_actionable():
+    resolved_at = T0 + timedelta(hours=1)
+    snapshots = [_snap(computed_at=T0, classification="NO_TRADE")]
+    resolved = [_resolved(market_id="m1", resolved_at=resolved_at)]
+    evaluations, excluded = build_first_signal_evaluations(resolved, {"m1": snapshots})
+    assert evaluations == []
+    assert excluded == ["m1"]
+
+
+def test_first_signal_evaluations_are_market_level_not_snapshot_level():
+    """Same guarantee as build_primary_evaluations: repeated COMPOUND
+    snapshots for one market must never inflate the count beyond 1."""
+    resolved_at = T0 + timedelta(hours=1)
+    snapshots = [
+        _snap(computed_at=T0 + timedelta(minutes=i), classification="COMPOUND") for i in range(22)
+    ]
+    resolved = [_resolved(market_id="m1", resolved_at=resolved_at, winning_outcome="Yes")]
+    evaluations, _ = build_first_signal_evaluations(resolved, {"m1": snapshots})
+    stats = aggregate_by_classification(evaluations)
+    assert stats["COMPOUND"].unique_markets == 1
+
+
+# --------------------------------------------------------------------------
+# build_signal_journal_evaluations / fetch_signal_journal_snapshots
+# --------------------------------------------------------------------------
+
+
+def test_build_signal_journal_evaluations_uses_journal_entry():
+    resolved_at = T0 + timedelta(hours=5)
+    resolved = [_resolved(market_id="m1", resolved_at=resolved_at, winning_outcome="Yes")]
+    snapshots = {
+        "m1": AnalysisSnapshot(
+            market_id="m1",
+            computed_at=T0,
+            category="crypto",
+            market_implied_probability=0.55,
+            estimated_probability=0.8,
+            raw_edge=None,
+            adjusted_edge=0.1,
+            score=65.0,
+            classification="COMPOUND",
+        )
+    }
+    evaluations, excluded = build_signal_journal_evaluations(resolved, snapshots)
+    assert excluded == []
+    assert len(evaluations) == 1
+    assert evaluations[0].snapshot.classification == "COMPOUND"
+    assert evaluations[0].correct is True  # predicted Yes (0.8 >= 0.5), actual Yes
+
+
+def test_build_signal_journal_evaluations_excludes_market_with_no_entry():
+    resolved = [_resolved(market_id="m1")]
+    evaluations, excluded = build_signal_journal_evaluations(resolved, {})
+    assert evaluations == []
+    assert excluded == ["m1"]
+
+
+def test_build_signal_journal_evaluations_excludes_entry_recorded_after_resolution():
+    resolved_at = T0
+    resolved = [_resolved(market_id="m1", resolved_at=resolved_at)]
+    snapshots = {"m1": _snap(computed_at=T0 + timedelta(hours=1))}
+    evaluations, excluded = build_signal_journal_evaluations(resolved, snapshots)
+    assert evaluations == []
+    assert excluded == ["m1"]
+
+
+def test_fetch_signal_journal_snapshots_round_trips_from_real_db(db):
+    _seed_market(db, "m1", category="crypto")
+    repo = SignalJournalRepository(db)
+    try:
+        repo.record_first_signal(
+            SignalJournalEntry(
+                market_id="m1",
+                first_signal_at=T0,
+                classification="WATCH",
+                category="crypto",
+                subcategory="btc_up_down",
+                market_implied_probability=0.6,
+                estimated_probability=0.7,
+                adjusted_edge=0.05,
+                score=55.0,
+            )
+        )
+    finally:
+        repo.close()
+
+    conn = sqlite3.connect(db.path)
+    conn.row_factory = sqlite3.Row
+    try:
+        snapshots = fetch_signal_journal_snapshots(conn)
+    finally:
+        conn.close()
+
+    assert set(snapshots) == {"m1"}
+    assert snapshots["m1"].classification == "WATCH"
+    assert snapshots["m1"].score == pytest.approx(55.0)
+    assert snapshots["m1"].computed_at == T0
+
+
+# --------------------------------------------------------------------------
+# End-to-end: run_evaluation() output includes both new sections and
+# contrasts correctly with the primary evaluation.
+# --------------------------------------------------------------------------
+
+
+def test_end_to_end_first_signal_section_shows_compound_where_primary_shows_no_trade(db):
+    _seed_market(db, "m1", category="crypto")
+    _insert_analysis(
+        db, computed_at=T0, classification="COMPOUND", score=62.83, estimated_probability=0.86
+    )
+    _insert_analysis(
+        db,
+        computed_at=T0 + timedelta(hours=1, minutes=58),
+        classification="NO_TRADE",
+        score=None,
+        risk_gate_passed=False,
+    )
+    _insert_resolution(db, resolved_at=T0 + timedelta(hours=2), winning_outcome="Yes")
+
+    conn = sqlite3.connect(db.path)
+    conn.row_factory = sqlite3.Row
+    try:
+        report = run_evaluation(conn)
+    finally:
+        conn.close()
+
+    assert "FIRST-ACTIONABLE-SIGNAL EVALUATION" in report
+    assert "SIGNAL JOURNAL EVALUATION" in report
+
+    first_signal_section = report.split("FIRST-ACTIONABLE-SIGNAL EVALUATION")[1].split(
+        "SIGNAL JOURNAL EVALUATION"
+    )[0]
+    assert "COMPOUND: unique_markets=1" in first_signal_section
+
+    # signal_journal table wasn't populated in this test (no pipeline run) -
+    # its section must show the market excluded, not crash or fabricate data.
+    signal_journal_section = report.split("SIGNAL JOURNAL EVALUATION")[1]
+    assert "markets_evaluated: 0" in signal_journal_section
+    assert "excluded_no_signal_journal_entry_before_resolution: 1" in signal_journal_section
+
+
+def test_end_to_end_signal_journal_section_reflects_real_journal_row(db):
+    _seed_market(db, "m1", category="politics")
+    repo = SignalJournalRepository(db)
+    try:
+        repo.record_first_signal(
+            SignalJournalEntry(
+                market_id="m1",
+                first_signal_at=T0,
+                classification="WATCH",
+                category="politics",
+                subcategory="elon_musk_tweets",
+                market_implied_probability=0.6,
+                estimated_probability=0.75,
+                adjusted_edge=0.05,
+                score=55.0,
+            )
+        )
+    finally:
+        repo.close()
+    _insert_resolution(db, resolved_at=T0 + timedelta(hours=1), winning_outcome="Yes")
+
+    conn = sqlite3.connect(db.path)
+    conn.row_factory = sqlite3.Row
+    try:
+        report = run_evaluation(conn)
+    finally:
+        conn.close()
+
+    signal_journal_section = report.split("SIGNAL JOURNAL EVALUATION")[1]
+    assert "markets_evaluated: 1" in signal_journal_section
+    assert "WATCH: unique_markets=1" in signal_journal_section

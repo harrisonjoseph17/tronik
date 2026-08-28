@@ -58,6 +58,24 @@ scripts/api_probe_resolutions.py, since AnalysisRepository has no
 "fetch all analyses for many markets" method (only per-market
 list_for_market/list_by_classification, both capped by a `limit`).
 
+Two additional, clearly separate evaluation views (both additive - the
+primary-evaluation section and its numbers above are unchanged):
+
+- FIRST-ACTIONABLE-SIGNAL EVALUATION: reconstructs, from the full
+  `analyses` history, each resolved market's EARLIEST COMPOUND/WATCH
+  snapshot at or before resolution (not its last snapshot of any kind -
+  that's the primary evaluation above - and not its best-scoring prior
+  snapshot - that's detect_late_stage_demotions). This is the
+  leak-free "what did the system first flag, and was it right" view,
+  covering the whole historical dataset since analyze started running.
+- SIGNAL JOURNAL EVALUATION: the same shape of evaluation, but sourced
+  from the signal_journal table (requirement #18) instead of
+  reconstructed from `analyses`. Only covers markets analyzed since the
+  journal went live (no backfill) - a much smaller window than the
+  first-actionable-signal view above, but is what the live system will
+  keep accumulating going forward without ever needing historical
+  reconstruction again.
+
 Run with: python scripts/evaluate_resolutions.py [--db-path PATH]
 """
 
@@ -440,6 +458,93 @@ def detect_late_stage_demotions(
     return demotions
 
 
+def select_first_actionable_snapshot(
+    snapshots: list[AnalysisSnapshot], resolved_at: datetime | None
+) -> AnalysisSnapshot | None:
+    """The EARLIEST COMPOUND/WATCH snapshot at or before resolution - the
+    market's first actionable signal. Distinct from select_primary_snapshot
+    (last snapshot of ANY classification) and from
+    detect_late_stage_demotions' picker (best-scoring prior COMPOUND/WATCH
+    snapshot, not necessarily the earliest). Returns None if the market
+    never reached COMPOUND/WATCH before resolution."""
+    if resolved_at is None:
+        return None
+    eligible = [
+        s
+        for s in snapshots
+        if s.computed_at <= resolved_at and s.classification in DETAILED_CLASSIFICATIONS
+    ]
+    if not eligible:
+        return None
+    return min(eligible, key=lambda s: s.computed_at)
+
+
+def build_first_signal_evaluations(
+    resolved_markets: list[ResolvedMarket],
+    analyses_by_market: dict[str, list[AnalysisSnapshot]],
+) -> tuple[list[PrimaryEvaluation], list[str]]:
+    """Same shape/guarantees as build_primary_evaluations (one evaluation
+    per market, never per snapshot) but keyed on each market's first
+    actionable signal instead of its last snapshot of any kind. A market
+    that never reached COMPOUND/WATCH before resolution is excluded (this
+    is a different, generally larger exclusion set than
+    build_primary_evaluations' - it excludes "never actionable", not just
+    "no analysis at all")."""
+    evaluations: list[PrimaryEvaluation] = []
+    excluded: list[str] = []
+    for market in resolved_markets:
+        if market.resolved_at is None or market.winning_outcome is None:
+            excluded.append(market.market_id)
+            continue
+        snapshots = analyses_by_market.get(market.market_id, [])
+        first_signal = select_first_actionable_snapshot(snapshots, market.resolved_at)
+        if first_signal is None:
+            excluded.append(market.market_id)
+            continue
+        evaluations.append(
+            PrimaryEvaluation(
+                market_id=market.market_id,
+                resolved_at=market.resolved_at,
+                winning_outcome=market.winning_outcome,
+                snapshot=first_signal,
+            )
+        )
+    return evaluations, excluded
+
+
+def build_signal_journal_evaluations(
+    resolved_markets: list[ResolvedMarket],
+    signal_journal_snapshots: dict[str, AnalysisSnapshot],
+) -> tuple[list[PrimaryEvaluation], list[str]]:
+    """One evaluation per resolved market that has a signal_journal entry
+    recorded at or before its resolution. Excludes markets with no journal
+    entry (most of the dataset, since the journal has no backfill - see
+    module docstring) and, defensively, any entry somehow recorded after
+    resolution (should not happen in practice, since the journal is only
+    ever written during a live analyze cycle on an as-yet-unresolved
+    market, but checked the same way build_primary_evaluations checks it -
+    never let a post-resolution value leak into an evaluation)."""
+    evaluations: list[PrimaryEvaluation] = []
+    excluded: list[str] = []
+    for market in resolved_markets:
+        if market.resolved_at is None or market.winning_outcome is None:
+            excluded.append(market.market_id)
+            continue
+        snapshot = signal_journal_snapshots.get(market.market_id)
+        if snapshot is None or snapshot.computed_at > market.resolved_at:
+            excluded.append(market.market_id)
+            continue
+        evaluations.append(
+            PrimaryEvaluation(
+                market_id=market.market_id,
+                resolved_at=market.resolved_at,
+                winning_outcome=market.winning_outcome,
+                snapshot=snapshot,
+            )
+        )
+    return evaluations, excluded
+
+
 # --------------------------------------------------------------------------
 # DB-facing helpers
 # --------------------------------------------------------------------------
@@ -517,6 +622,34 @@ def fetch_analyses_for_markets(
     return result
 
 
+def fetch_signal_journal_snapshots(conn: sqlite3.Connection) -> dict[str, AnalysisSnapshot]:
+    """One row per market_id (signal_journal's PK), converted into the same
+    AnalysisSnapshot shape used everywhere else so build_signal_journal_
+    evaluations/aggregate_by_classification/aggregate_by_category/
+    calibration_bins can all be reused unchanged. signal_journal has no
+    raw_edge/risk_gate_reasons/quality_gate_reason columns (see
+    app/storage/database.py) - those fields are left at their defaults."""
+    rows = conn.execute(
+        "SELECT market_id, first_signal_at, classification, category, subcategory, "
+        "market_implied_probability, estimated_probability, adjusted_edge, score "
+        "FROM signal_journal"
+    ).fetchall()
+    return {
+        row["market_id"]: AnalysisSnapshot(
+            market_id=row["market_id"],
+            computed_at=_parse_dt(row["first_signal_at"]),
+            category=row["category"],
+            market_implied_probability=row["market_implied_probability"],
+            estimated_probability=row["estimated_probability"],
+            raw_edge=None,
+            adjusted_edge=row["adjusted_edge"],
+            score=row["score"],
+            classification=row["classification"],
+        )
+        for row in rows
+    }
+
+
 # --------------------------------------------------------------------------
 # Report rendering
 # --------------------------------------------------------------------------
@@ -524,6 +657,96 @@ def fetch_analyses_for_markets(
 
 def _fmt(value: float | None, digits: int = 4) -> str:
     return "n/a" if value is None else f"{value:.{digits}f}"
+
+
+def _render_binary_summary_section(
+    title: str,
+    description_lines: list[str],
+    evaluations: list[PrimaryEvaluation],
+    excluded_market_ids: list[str],
+    excluded_label: str,
+) -> list[str]:
+    """Self-contained: computes classification/category/calibration stats
+    internally (reusing the same market-level aggregate_by_classification/
+    aggregate_by_category/calibration_bins used for the primary evaluation)
+    so both new sections share one rendering path instead of duplicating
+    the primary section's hand-written layout."""
+    lines: list[str] = []
+    out = lines.append
+
+    out("=" * 78)
+    out(title)
+    out("=" * 78)
+    for line in description_lines:
+        out(line)
+    out("")
+    out(f"markets_evaluated: {len(evaluations)}")
+    out(f"{excluded_label}: {len(excluded_market_ids)}")
+    out("")
+
+    classification_stats = aggregate_by_classification(evaluations)
+    out("-- classification market-level counts --")
+    for classification in ALL_CLASSIFICATIONS:
+        s = classification_stats.get(classification)
+        out(f"  {classification}: unique_markets={s.unique_markets if s else 0}")
+    out("")
+
+    binary_evals = [e for e in evaluations if e.correct is not None]
+    non_binary_n = len(evaluations) - len(binary_evals)
+    n = len(binary_evals)
+    correct = sum(1 for e in binary_evals if e.correct)
+    accuracy = (correct / n) if n else None
+    brier = _mean([e.brier for e in binary_evals])
+    out("-- binary directional performance --")
+    out(f"  binary_sample_size = {n}")
+    out(f"  excluded_non_binary_outcome = {non_binary_n}")
+    out(f"  correct = {correct}")
+    out(f"  accuracy = {_fmt(accuracy)}")
+    out(f"  brier_score = {_fmt(brier)}")
+    out("")
+
+    category_stats = aggregate_by_category(evaluations)
+    out("-- category-level binary performance --")
+    for category in ("politics", "crypto", "sports"):
+        s = category_stats.get(category)
+        if s is None:
+            out(f"  {category}: n=0")
+        else:
+            out(
+                f"  {category}: n={s.binary_n} correct={s.correct} "
+                f"accuracy={_fmt(s.accuracy)} brier={_fmt(s.brier)}"
+            )
+    other_categories = sorted(set(category_stats) - {"politics", "crypto", "sports"})
+    for category in other_categories:
+        s = category_stats[category]
+        out(
+            f"  {category}: n={s.binary_n} correct={s.correct} "
+            f"accuracy={_fmt(s.accuracy)} brier={_fmt(s.brier)}"
+        )
+    out("")
+
+    bins = calibration_bins(evaluations)
+    out("-- probability calibration --")
+    for b in bins:
+        out(
+            f"  [{b.low:.1f}, {b.high:.1f}): n={b.n} "
+            f"avg_predicted={_fmt(b.avg_predicted, 3)} "
+            f"actual_yes_frequency={_fmt(b.actual_yes_frequency, 3)}"
+        )
+    out("")
+
+    out("-- market detail (market_id, classification, signal time, resolved, winner, predicted, correct) --")
+    if evaluations:
+        for e in sorted(evaluations, key=lambda e: e.snapshot.computed_at):
+            out(
+                f"  {e.market_id:<12} {e.snapshot.classification:<9} "
+                f"{e.snapshot.computed_at.isoformat():<20} {e.resolved_at.isoformat():<20} "
+                f"{e.winning_outcome:<8} {str(e.predicted_side):<6} {str(e.correct)}"
+            )
+    else:
+        out("  (none)")
+
+    return lines
 
 
 def render_report(
@@ -535,6 +758,10 @@ def render_report(
     bins: list[CalibrationBin],
     snapshot_stats: dict[str, SnapshotLevelStats],
     demotions: list[LateStageDemotion],
+    first_signal_evaluations: list[PrimaryEvaluation],
+    first_signal_excluded: list[str],
+    signal_journal_evaluations: list[PrimaryEvaluation],
+    signal_journal_excluded: list[str],
 ) -> str:
     lines: list[str] = []
     out = lines.append
@@ -686,6 +913,39 @@ def render_report(
             f"avg_estimated_probability={_fmt(s.avg_estimated_probability)} "
             f"avg_adjusted_edge={_fmt(s.avg_adjusted_edge)}"
         )
+    out("")
+
+    lines.extend(
+        _render_binary_summary_section(
+            "FIRST-ACTIONABLE-SIGNAL EVALUATION (earliest COMPOUND/WATCH snapshot per market, "
+            "reconstructed from analyses history)",
+            [
+                "Leak-free: only ever uses a market's EARLIEST COMPOUND/WATCH snapshot at or",
+                "before its resolution - the system's first flag, not its last opinion (that's",
+                "the primary evaluation above) and not its best-scoring prior signal (that's the",
+                "late-stage demotion note above). Covers the full analyses history.",
+            ],
+            first_signal_evaluations,
+            first_signal_excluded,
+            "excluded_never_reached_compound_or_watch_before_resolution",
+        )
+    )
+    out("")
+
+    lines.extend(
+        _render_binary_summary_section(
+            "SIGNAL JOURNAL EVALUATION (from the signal_journal table - requirement #18)",
+            [
+                "Sourced from signal_journal, not reconstructed from analyses history - only",
+                "covers markets analyzed since the journal went live (no backfill), so this",
+                "will start small and grow going forward without ever needing historical",
+                "reconstruction again.",
+            ],
+            signal_journal_evaluations,
+            signal_journal_excluded,
+            "excluded_no_signal_journal_entry_before_resolution",
+        )
+    )
 
     return "\n".join(lines)
 
@@ -702,6 +962,15 @@ def run_evaluation(conn: sqlite3.Connection) -> str:
     snapshot_stats = snapshot_level_report(resolved_markets, analyses_by_market)
     demotions = detect_late_stage_demotions(evaluations, analyses_by_market)
 
+    first_signal_evaluations, first_signal_excluded = build_first_signal_evaluations(
+        resolved_markets, analyses_by_market
+    )
+
+    signal_journal_snapshots = fetch_signal_journal_snapshots(conn)
+    signal_journal_evaluations, signal_journal_excluded = build_signal_journal_evaluations(
+        resolved_markets, signal_journal_snapshots
+    )
+
     return render_report(
         status_counts,
         evaluations,
@@ -711,6 +980,10 @@ def run_evaluation(conn: sqlite3.Connection) -> str:
         bins,
         snapshot_stats,
         demotions,
+        first_signal_evaluations,
+        first_signal_excluded,
+        signal_journal_evaluations,
+        signal_journal_excluded,
     )
 
 
