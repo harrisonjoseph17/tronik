@@ -14,7 +14,21 @@ ExecStart=/root/tronik/scripts/run_scan_and_analyze.sh
 # Raised from 512M after a live run hit that cap exactly and spilled
 # ~57.5M into swap (systemd-reported "512M memory peak, 57.5M memory swap
 # peak") - real observed working set is ~570M, not a guess.
-TimeoutStartSec=600
+#
+# TimeoutStartSec raised from 600 to 1800 (Aug 28) after real journalctl
+# evidence: as the target markets' analyses/snapshot history and Gamma's
+# active-event catalog have grown over ~9 days of continuous running,
+# `scan` alone now regularly takes 2.5-4 min, and `analyze` (per-market
+# CLOB calls) was still running - not yet finished - at the old 10-minute
+# mark on two consecutive cycles, meaning `resolve`/`paper` never got to
+# run at all. Safe to set above the timer's 15-minute OnUnitActiveSec -
+# systemd won't start a second instance of a still-running oneshot
+# service, so an occasional long cycle just absorbs the next tick rather
+# than overlapping. If cycles still don't finish within 30 minutes as
+# volume keeps growing, that's a sign scan/analyze need their own
+# investigation (e.g. splitting them onto independent timers, as already
+# flagged as a possible follow-up in the README) - not a bigger number.
+TimeoutStartSec=1800
 MemoryMax=896M
 # No Restart= - this is a oneshot service fired by a timer, not a
 # long-running daemon. A failed run's natural retry is the timer's next
