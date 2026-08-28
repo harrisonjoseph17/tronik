@@ -11,7 +11,9 @@ time-series table written before a market resolves. `signal_journal`
 (requirement #18) records each market's first-ever actionable
 (COMPOUND/WATCH) analysis snapshot, one row per market_id like
 `resolutions`, so it's joinable with `resolutions` by market_id the same
-way. Later stages add paper_trades/etc. as those are built.
+way. `paper_trades` (requirement #19) is one simulated position per
+market, opened from `signal_journal` and closed from `resolutions` -
+strictly read-only with respect to every other table.
 """
 
 from __future__ import annotations
@@ -158,6 +160,33 @@ CREATE TABLE IF NOT EXISTS signal_journal (
     FOREIGN KEY (market_id) REFERENCES markets(market_id)
 );
 CREATE INDEX IF NOT EXISTS idx_signal_journal_classification ON signal_journal(classification);
+
+-- Requirement #19: one simulated position per market, opened the first
+-- time signal_journal records an actionable signal for it (market_id as
+-- PK enforces this - one trade per market, same as signal_journal/
+-- resolutions), closed once resolutions confirms an outcome. Read-only
+-- with respect to every other table - app/paper/paper_trading.py never
+-- writes to analyses/resolutions/signal_journal, only reads them.
+CREATE TABLE IF NOT EXISTS paper_trades (
+    market_id             TEXT PRIMARY KEY,
+    classification          TEXT NOT NULL,
+    category                  TEXT,
+    subcategory                 TEXT,
+    signal_at                     TEXT NOT NULL,
+    selected_outcome                TEXT NOT NULL,
+    entry_probability                  REAL NOT NULL,
+    estimated_probability                 REAL,
+    raw_edge                                 REAL,
+    adjusted_edge                               REAL,
+    score                                          REAL,
+    status                                           TEXT NOT NULL DEFAULT 'OPEN',
+    settled_at                                          TEXT,
+    winning_outcome                                        TEXT,
+    pnl                                                       REAL,
+    FOREIGN KEY (market_id) REFERENCES markets(market_id)
+);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_status ON paper_trades(status);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_classification ON paper_trades(classification);
 """
 
 

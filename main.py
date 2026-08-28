@@ -3,6 +3,7 @@
     python main.py scan     - run one discovery scan cycle
     python main.py analyze  - run the Stage 2 feature/probability/edge/risk/score pipeline
     python main.py resolve  - check previously-analyzed markets for resolution outcomes
+    python main.py paper    - open/settle simulated paper trades from the signal journal
     python main.py initdb   - create the SQLite schema
 """
 
@@ -14,6 +15,7 @@ import logging
 
 from app.analysis.pipeline import run_analysis_once
 from app.config.loader import load_config
+from app.paper.paper_trading import run_paper_trading_once
 from app.polymarket.resolutions import check_pending_resolutions
 from app.polymarket.scanner import run_scan_once
 from app.storage.database import Database
@@ -25,6 +27,7 @@ def main() -> None:
     subparsers.add_parser("scan", help="Run one discovery scan cycle")
     subparsers.add_parser("analyze", help="Run the feature/probability/edge/risk/score pipeline")
     subparsers.add_parser("resolve", help="Check previously-analyzed markets for resolution outcomes")
+    subparsers.add_parser("paper", help="Open/settle simulated paper trades from the signal journal")
     subparsers.add_parser("initdb", help="Create the SQLite schema")
     args = parser.parse_args()
 
@@ -51,6 +54,11 @@ def main() -> None:
 
     if args.command == "resolve":
         summary = asyncio.run(check_pending_resolutions(config, db))
+        print(summary)
+        return
+
+    if args.command == "paper":
+        summary = run_paper_trading_once(config, db)
         print(summary)
         return
 

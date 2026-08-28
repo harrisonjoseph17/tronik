@@ -6,10 +6,10 @@ them deterministically, uses an LLM only on a small shortlist, alerts over
 Telegram, and tracks paper-trading performance honestly before any live
 trading is ever considered.
 
-**Status: Stage 2 (discovery + feature/probability/edge/risk-gate/scoring
-pipeline, narrowed to three target market families, deployable via
-systemd).** LLM analysis, Telegram, paper trading, and performance tracking
-are not built yet — see [Roadmap](#roadmap).
+**Status: Stage 2 pipeline (discovery + feature/probability/edge/risk-gate/
+scoring, narrowed to three target market families) plus a signal journal
+and simulated paper trading, deployable via systemd.** LLM analysis,
+Telegram, and live trading are not built yet — see [Roadmap](#roadmap).
 
 ## Why this exists
 
@@ -128,12 +128,23 @@ No secrets are needed for Stage 1 — see `.env.example`.
 python main.py initdb   # create data/polymarket.db schema
 python main.py scan     # run one discovery cycle, prints a ScanSummary
 python main.py analyze  # run features->quality gate->probability->edge->risk gate->scoring->classification
+python main.py resolve  # check previously-analyzed markets for resolution outcomes
+python main.py paper    # open/settle simulated paper trades from the signal journal
 ```
 
 `analyze` only considers the three target `(category, subcategory)` pairs
 configured in `config/profile.yaml`'s `target_subcategories` (see
 [Architecture](#architecture-current)) - see [Deployment](#deployment) to
-run both commands automatically on a schedule instead of by hand.
+run all four commands automatically on a schedule instead of by hand.
+
+`paper` opens exactly one simulated position per market the first time it
+produces an actionable (COMPOUND/WATCH) signal (read from `signal_journal`,
+never re-derived), and settles it once `resolutions` confirms an outcome -
+`WON`/`LOST` for a real resolution, `VOID` (never a win or loss) for an
+invalid/canceled one. No real orders are ever placed - this is simulation
+only, with a fixed 1-unit notional per trade and no bankroll management.
+Run `python scripts/evaluate_paper_trades.py` for a performance report
+(overall + per-classification + per-category win rate, P&L, ROI).
 
 ## Tests
 
@@ -141,7 +152,7 @@ run both commands automatically on a schedule instead of by hand.
 pytest
 ```
 
-All 233 tests run against mocked HTTP responses (via `respx`), stubs, or an
+All 319 tests run against mocked HTTP responses (via `respx`), stubs, or an
 in-memory temp SQLite file — no network access required.
 
 ## Live smoke test
@@ -170,11 +181,11 @@ sudo bash scripts/setup.sh
 ```
 
 This copies the unit files to `/etc/systemd/system/`, reloads systemd, and
-enables+starts the timer. It runs `scan`, then `analyze`, then `resolve`
-every 15 minutes (`OnUnitActiveSec` in `deploy/polymarket-companion.timer`
-- matches `filters.scan_interval_seconds`'s default in `config/profile.yaml`,
-though the two aren't linked automatically; update both if you change the
-interval).
+enables+starts the timer. It runs `scan`, then `analyze`, then `resolve`,
+then `paper` every 15 minutes (`OnUnitActiveSec` in
+`deploy/polymarket-companion.timer` - matches `filters.scan_interval_
+seconds`'s default in `config/profile.yaml`, though the two aren't linked
+automatically; update both if you change the interval).
 
 **Check it's running:**
 
@@ -205,10 +216,12 @@ sudo systemctl daemon-reload
 the data quality gate, and `resolve` makes a Gamma `/markets` call per
 not-yet-resolved market in `analyses`, so this cadence means recurring
 Gamma/CLOB traffic roughly every 15 minutes indefinitely - `scan`, `analyze`,
-and `resolve` are coupled on the same timer for simplicity; splitting them
-onto independent intervals is a small follow-up if that traffic ever needs
-tuning down. `resolve`'s per-run cost naturally shrinks over time since it
-only ever looks at markets not already marked resolved.
+`resolve`, and `paper` are coupled on the same timer for simplicity;
+splitting them onto independent intervals is a small follow-up if that
+traffic ever needs tuning down. `resolve`'s per-run cost naturally shrinks
+over time since it only ever looks at markets not already marked resolved,
+and `paper` makes no network calls at all - it only reads/writes local
+tables (`signal_journal`, `analyses`, `resolutions`, `paper_trades`).
 
 ## Design principles
 
@@ -235,9 +248,11 @@ only ever looks at markets not already marked resolved.
 
 ## Roadmap
 
-Stage 1 (this stage) covers environment/API verification, project setup,
-market discovery, categorization, filtering, normalization, and minimal
-persistence. Not yet built: feature engineering, the probability/edge
-engine, trade scoring and classification, selective LLM analysis, Telegram
-alerts, paper trading, performance tracking, backtesting, and systemd
-deployment — each is a separate planned stage, in that order.
+Built so far: market discovery/categorization/filtering/persistence
+(Stage 1); the feature/probability/edge/risk-gate/scoring/classification
+pipeline, narrowed to a three-family target universe (Stage 2); market
+resolution tracking; a signal journal recording each market's first
+actionable signal; and simulated paper trading with a performance report,
+all running unattended on a 15-minute systemd timer. Not yet built:
+selective LLM analysis, Telegram alerts, and any live trading — each
+remains a separate, explicitly deferred stage.

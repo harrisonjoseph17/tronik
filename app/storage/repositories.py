@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from app.storage.analysis_models import AnalysisRecord, DataQualityState, Features
 from app.storage.database import Database
 from app.storage.models import Market
+from app.storage.paper_trade_models import PaperTrade, PaperTradeStatus
 from app.storage.resolution_models import Resolution, ResolutionStatus
 from app.storage.signal_journal_models import SignalJournalEntry
 
@@ -376,6 +377,18 @@ class AnalysisRepository:
         ).fetchall()
         return [self._row_to_analysis(row) for row in rows]
 
+    def get_at(self, market_id: str, computed_at: datetime) -> AnalysisRecord | None:
+        """Exact-match point lookup, not subject to list_for_market's
+        DESC/LIMIT window - a market's first-ever analysis row (used by
+        requirement #19's paper-trade creation to recover raw_edge, which
+        signal_journal doesn't store) could otherwise scroll out of that
+        window entirely once enough later rows accumulate."""
+        row = self._conn.execute(
+            "SELECT * FROM analyses WHERE market_id = ? AND computed_at = ?",
+            (market_id, computed_at.isoformat()),
+        ).fetchone()
+        return self._row_to_analysis(row) if row else None
+
     def list_by_classification(self, classification: str, *, limit: int = 100) -> list[AnalysisRecord]:
         rows = self._conn.execute(
             "SELECT * FROM analyses WHERE classification = ? ORDER BY computed_at DESC LIMIT ?",
@@ -571,4 +584,135 @@ class SignalJournalRepository:
             estimated_probability=row["estimated_probability"],
             adjusted_edge=row["adjusted_edge"],
             score=row["score"],
+        )
+
+
+_INSERT_PAPER_TRADE_SQL = """
+INSERT INTO paper_trades (
+    market_id, classification, category, subcategory, signal_at,
+    selected_outcome, entry_probability, estimated_probability, raw_edge,
+    adjusted_edge, score, status, settled_at, winning_outcome, pnl
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+"""
+
+
+class PaperTradeRepository:
+    """Requirement #19. Read-only with respect to every other table -
+    create() only ever reads signal_journal/analyses/markets to build a
+    PaperTrade, settle() only ever reads resolutions. One trade per
+    market_id (the table's PK, same defense-in-depth pattern as
+    resolutions/signal_journal), and once settled a trade is immutable -
+    settle() refuses to change a row that isn't currently OPEN."""
+
+    def __init__(self, db: Database):
+        self._conn = db.connect()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def create(self, trade: PaperTrade) -> bool:
+        """Returns True if this call actually created the trade, False if
+        one already existed for this market_id (no-op - nothing changed)."""
+        if self.get(trade.market_id) is not None:
+            return False
+
+        self._conn.execute(
+            _INSERT_PAPER_TRADE_SQL,
+            (
+                trade.market_id,
+                trade.classification,
+                trade.category,
+                trade.subcategory,
+                trade.signal_at.isoformat(),
+                trade.selected_outcome,
+                trade.entry_probability,
+                trade.estimated_probability,
+                trade.raw_edge,
+                trade.adjusted_edge,
+                trade.score,
+                trade.status.value,
+                trade.settled_at.isoformat() if trade.settled_at else None,
+                trade.winning_outcome,
+                trade.pnl,
+            ),
+        )
+        self._conn.commit()
+        return True
+
+    def get(self, market_id: str) -> PaperTrade | None:
+        row = self._conn.execute(
+            "SELECT * FROM paper_trades WHERE market_id = ?", (market_id,)
+        ).fetchone()
+        return self._row_to_trade(row) if row else None
+
+    def list_pending_signal_market_ids(self, *, limit: int = 500) -> list[str]:
+        """Distinct market_ids present in signal_journal with no
+        paper_trades row yet - the candidate set for a creation run."""
+        rows = self._conn.execute(
+            """
+            SELECT sj.market_id
+            FROM signal_journal sj
+            LEFT JOIN paper_trades pt ON pt.market_id = sj.market_id
+            WHERE pt.market_id IS NULL
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return [row["market_id"] for row in rows]
+
+    def list_open(self, *, limit: int = 500) -> list[PaperTrade]:
+        rows = self._conn.execute(
+            "SELECT * FROM paper_trades WHERE status = ? ORDER BY signal_at ASC LIMIT ?",
+            (PaperTradeStatus.OPEN.value, limit),
+        ).fetchall()
+        return [self._row_to_trade(row) for row in rows]
+
+    def list_all(self, *, limit: int = 1000) -> list[PaperTrade]:
+        rows = self._conn.execute(
+            "SELECT * FROM paper_trades ORDER BY signal_at ASC LIMIT ?", (limit,)
+        ).fetchall()
+        return [self._row_to_trade(row) for row in rows]
+
+    def settle(
+        self,
+        market_id: str,
+        *,
+        status: PaperTradeStatus,
+        settled_at: datetime,
+        winning_outcome: str | None,
+        pnl: float | None,
+    ) -> bool:
+        """Only transitions a trade that is currently OPEN. Returns True if
+        this call actually settled it, False if it was already settled
+        (no-op - the original settlement is never overwritten, same
+        immutability guarantee as ResolutionRepository.upsert)."""
+        existing = self.get(market_id)
+        if existing is None or existing.status != PaperTradeStatus.OPEN:
+            return False
+
+        self._conn.execute(
+            "UPDATE paper_trades SET status = ?, settled_at = ?, winning_outcome = ?, pnl = ? "
+            "WHERE market_id = ?",
+            (status.value, settled_at.isoformat(), winning_outcome, pnl, market_id),
+        )
+        self._conn.commit()
+        return True
+
+    def _row_to_trade(self, row: sqlite3.Row) -> PaperTrade:
+        return PaperTrade(
+            market_id=row["market_id"],
+            classification=row["classification"],
+            category=row["category"],
+            subcategory=row["subcategory"],
+            signal_at=datetime.fromisoformat(row["signal_at"]),
+            selected_outcome=row["selected_outcome"],
+            entry_probability=row["entry_probability"],
+            estimated_probability=row["estimated_probability"],
+            raw_edge=row["raw_edge"],
+            adjusted_edge=row["adjusted_edge"],
+            score=row["score"],
+            status=PaperTradeStatus(row["status"]),
+            settled_at=datetime.fromisoformat(row["settled_at"]) if row["settled_at"] else None,
+            winning_outcome=row["winning_outcome"],
+            pnl=row["pnl"],
         )
