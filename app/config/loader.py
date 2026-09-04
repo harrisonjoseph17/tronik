@@ -90,6 +90,15 @@ class AnalysisSettings:
 
 
 @dataclass
+class NotificationSettings:
+    # Secrets - read from environment/.env only, never from profile.yaml
+    # (which is checked into git). Both None means notifications are
+    # unconfigured and app/notify/telegram.py silently no-ops.
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+
+
+@dataclass
 class AppConfig:
     filters: FilterSettings = field(default_factory=FilterSettings)
     analysis: AnalysisSettings = field(default_factory=AnalysisSettings)
@@ -98,6 +107,7 @@ class AppConfig:
     target_subcategories: dict[str, frozenset[str]] = field(
         default_factory=lambda: dict(DEFAULT_TARGET_SUBCATEGORIES)
     )
+    notifications: NotificationSettings = field(default_factory=NotificationSettings)
     db_path: Path = Path("data/polymarket.db")
     log_level: str = "INFO"
 
@@ -235,11 +245,18 @@ def load_config(
     db_path = Path(os.environ.get("DB_PATH", storage_raw.get("db_path", "data/polymarket.db")))
     log_level = os.environ.get("LOG_LEVEL", logging_raw.get("level", "INFO"))
 
+    # Secrets - env/.env only, no profile.yaml fallback (see NotificationSettings).
+    notifications = NotificationSettings(
+        telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN"),
+        telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID"),
+    )
+
     return AppConfig(
         filters=filters,
         analysis=analysis,
         category_rules=category_rules,
         target_subcategories=target_subcategories,
+        notifications=notifications,
         db_path=db_path,
         log_level=log_level,
     )

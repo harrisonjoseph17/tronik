@@ -15,6 +15,7 @@ import logging
 
 from app.analysis.pipeline import run_analysis_once
 from app.config.loader import load_config
+from app.notify.telegram import notify_paper_trading_events
 from app.paper.paper_trading import run_paper_trading_once
 from app.polymarket.resolutions import check_pending_resolutions
 from app.polymarket.scanner import run_scan_once
@@ -59,7 +60,11 @@ def main() -> None:
 
     if args.command == "paper":
         summary = run_paper_trading_once(config, db)
+        notify_summary = notify_paper_trading_events(
+            config, db, summary.creation.created_trades, summary.settlement.settled_trades
+        )
         print(summary)
+        print(notify_summary)
         return
 
 

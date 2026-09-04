@@ -7,9 +7,10 @@ Telegram, and tracks paper-trading performance honestly before any live
 trading is ever considered.
 
 **Status: Stage 2 pipeline (discovery + feature/probability/edge/risk-gate/
-scoring, narrowed to three target market families) plus a signal journal
-and simulated paper trading, deployable via systemd.** LLM analysis,
-Telegram, and live trading are not built yet — see [Roadmap](#roadmap).
+scoring, narrowed to three target market families) plus a signal journal,
+simulated paper trading, and optional Telegram notifications, deployable
+via systemd.** LLM analysis and live trading are not built yet — see
+[Roadmap](#roadmap).
 
 ## Why this exists
 
@@ -120,7 +121,9 @@ source .venv/bin/activate
 pip install -r requirements-dev.txt   # includes requirements.txt
 ```
 
-No secrets are needed for Stage 1 — see `.env.example`.
+No secrets are required — `scan`/`analyze`/`resolve`/`paper` run identically
+without any. Optional Telegram notifications for paper trading are
+described below — see `.env.example`.
 
 ## Usage
 
@@ -146,13 +149,34 @@ only, with a fixed 1-unit notional per trade and no bankroll management.
 Run `python scripts/evaluate_paper_trades.py` for a performance report
 (overall + per-classification + per-category win rate, P&L, ROI).
 
+### Telegram notifications (optional)
+
+`paper` sends a Telegram message when a new paper trade opens and when one
+settles, if configured - entirely optional, and the pipeline runs
+identically without it (`app/notify/telegram.py::notify_paper_trading_events`
+silently no-ops when unconfigured, and a Telegram outage never blocks or
+crashes `scan`/`analyze`/`resolve`/`paper`).
+
+To enable it, set two variables in `.env` (never committed - already
+`.gitignore`d):
+
+```
+TELEGRAM_BOT_TOKEN=<from @BotFather>
+TELEGRAM_CHAT_ID=<your chat id>
+```
+
+Create a bot via [@BotFather](https://t.me/BotFather) to get the token.
+For the chat id: message your new bot once, then visit
+`https://api.telegram.org/bot<token>/getUpdates` in a browser and read
+`message.chat.id` from the JSON response.
+
 ## Tests
 
 ```bash
 pytest
 ```
 
-All 319 tests run against mocked HTTP responses (via `respx`), stubs, or an
+All 342 tests run against mocked HTTP responses (via `respx`), stubs, or an
 in-memory temp SQLite file — no network access required.
 
 ## Live smoke test
@@ -252,7 +276,8 @@ Built so far: market discovery/categorization/filtering/persistence
 (Stage 1); the feature/probability/edge/risk-gate/scoring/classification
 pipeline, narrowed to a three-family target universe (Stage 2); market
 resolution tracking; a signal journal recording each market's first
-actionable signal; and simulated paper trading with a performance report,
-all running unattended on a 15-minute systemd timer. Not yet built:
-selective LLM analysis, Telegram alerts, and any live trading — each
-remains a separate, explicitly deferred stage.
+actionable signal; simulated paper trading with a performance report; and
+optional Telegram notifications on new/settled paper trades - all running
+unattended on a 15-minute systemd timer. Not yet built: selective LLM
+analysis and any live trading — each remains a separate, explicitly
+deferred stage.

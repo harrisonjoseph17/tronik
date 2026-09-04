@@ -371,3 +371,69 @@ def test_run_paper_trading_once_creates_and_settles_in_one_call(config, db):
         paper_trade_repo.close()
     assert trade.status == PaperTradeStatus.WON
     assert trade.raw_edge == pytest.approx(0.15)
+
+
+# --------------------------------------------------------------------------
+# created_trades / settled_trades (requirement #20 - Telegram notifications
+# need the exact trades affected this run, without a second DB query)
+# --------------------------------------------------------------------------
+
+
+def test_creation_summary_includes_the_created_trade(config, db):
+    _seed_market(db, "m1")
+    _seed_signal(db, "m1", estimated_probability=0.75, classification="WATCH")
+    _seed_analysis_with_raw_edge(db, "m1", T1, raw_edge=0.15)
+
+    summary = create_paper_trades_for_new_signals(config, db)
+
+    assert len(summary.created_trades) == 1
+    trade = summary.created_trades[0]
+    assert trade.market_id == "m1"
+    assert trade.classification == "WATCH"
+    assert trade.selected_outcome == "Yes"
+    assert trade.raw_edge == pytest.approx(0.15)
+
+
+def test_creation_summary_trades_list_is_empty_when_nothing_created(config, db):
+    summary = create_paper_trades_for_new_signals(config, db)
+    assert summary.created_trades == []
+
+
+def test_settlement_summary_includes_the_settled_trade_with_final_values(config, db):
+    _seed_market(db, "m1")
+    _seed_signal(db, "m1", estimated_probability=0.75)
+    create_paper_trades_for_new_signals(config, db)
+    _seed_resolution(db, "m1", winning_outcome="Yes")
+
+    summary = settle_open_paper_trades(config, db)
+
+    assert len(summary.settled_trades) == 1
+    trade = summary.settled_trades[0]
+    assert trade.market_id == "m1"
+    assert trade.status == PaperTradeStatus.WON
+    assert trade.winning_outcome == "Yes"
+    assert trade.pnl == pytest.approx(1.0 - 0.55)
+
+
+def test_settlement_summary_includes_void_trade(config, db):
+    _seed_market(db, "m1")
+    _seed_signal(db, "m1")
+    create_paper_trades_for_new_signals(config, db)
+    _seed_resolution(db, "m1", resolution_status=ResolutionStatus.INVALID, winning_outcome=None)
+
+    summary = settle_open_paper_trades(config, db)
+
+    assert len(summary.settled_trades) == 1
+    trade = summary.settled_trades[0]
+    assert trade.status == PaperTradeStatus.VOID
+    assert trade.pnl == pytest.approx(0.0)
+
+
+def test_settlement_summary_trades_list_is_empty_when_nothing_settles(config, db):
+    _seed_market(db, "m1")
+    _seed_signal(db, "m1")
+    create_paper_trades_for_new_signals(config, db)
+    # No resolution seeded - trade stays OPEN.
+
+    summary = settle_open_paper_trades(config, db)
+    assert summary.settled_trades == []

@@ -92,3 +92,37 @@ def test_load_config_target_subcategories_custom_override(tmp_path: Path):
     )
     config = load_config(profile_path=profile_path, markets_path=tmp_path / "missing.yaml")
     assert config.target_subcategories == {"crypto": frozenset({"btc_up_down"})}
+
+
+def test_load_config_notifications_default_to_unconfigured(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    config = load_config(
+        profile_path=tmp_path / "does_not_exist.yaml",
+        markets_path=tmp_path / "also_missing.yaml",
+    )
+    assert config.notifications.telegram_bot_token is None
+    assert config.notifications.telegram_chat_id is None
+
+
+def test_load_config_notifications_read_from_environment(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat1")
+    config = load_config(
+        profile_path=tmp_path / "does_not_exist.yaml",
+        markets_path=tmp_path / "also_missing.yaml",
+    )
+    assert config.notifications.telegram_bot_token == "123:abc"
+    assert config.notifications.telegram_chat_id == "chat1"
+
+
+def test_load_config_notifications_never_read_from_profile_yaml(tmp_path: Path, monkeypatch):
+    """Secrets must never come from the checked-in profile.yaml - only
+    from the environment/.env, even if someone mistakenly adds a
+    `notifications:` section to profile.yaml."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text("notifications:\n  telegram_bot_token: should-be-ignored\n")
+    config = load_config(profile_path=profile_path, markets_path=tmp_path / "missing.yaml")
+    assert config.notifications.telegram_bot_token is None

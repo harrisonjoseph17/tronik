@@ -35,7 +35,7 @@ a win or a loss.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from app.config.loader import AppConfig
@@ -69,6 +69,11 @@ class CreationSummary:
     skipped_non_binary_market: int = 0
     skipped_market_not_found: int = 0
     skipped_estimate_missing: int = 0
+    # The exact trades created this run, in case a caller (e.g.
+    # app/notify/telegram.py) needs to know which without a second query -
+    # requirement #20. Purely additive - existing count-based assertions
+    # are unaffected.
+    created_trades: list[PaperTrade] = field(default_factory=list)
 
 
 def create_paper_trades_for_new_signals(
@@ -113,22 +118,22 @@ def create_paper_trades_for_new_signals(
             analysis_at_signal = analysis_repo.get_at(market_id, entry.first_signal_at)
             raw_edge = analysis_at_signal.raw_edge if analysis_at_signal is not None else None
 
-            paper_trade_repo.create(
-                PaperTrade(
-                    market_id=market_id,
-                    classification=entry.classification,
-                    category=entry.category,
-                    subcategory=entry.subcategory,
-                    signal_at=entry.first_signal_at,
-                    selected_outcome=derive_selected_outcome(entry.estimated_probability),
-                    entry_probability=entry.market_implied_probability,
-                    estimated_probability=entry.estimated_probability,
-                    raw_edge=raw_edge,
-                    adjusted_edge=entry.adjusted_edge,
-                    score=entry.score,
-                )
+            trade = PaperTrade(
+                market_id=market_id,
+                classification=entry.classification,
+                category=entry.category,
+                subcategory=entry.subcategory,
+                signal_at=entry.first_signal_at,
+                selected_outcome=derive_selected_outcome(entry.estimated_probability),
+                entry_probability=entry.market_implied_probability,
+                estimated_probability=entry.estimated_probability,
+                raw_edge=raw_edge,
+                adjusted_edge=entry.adjusted_edge,
+                score=entry.score,
             )
-            summary.created += 1
+            if paper_trade_repo.create(trade):
+                summary.created += 1
+                summary.created_trades.append(trade)
     finally:
         market_repo.close()
         analysis_repo.close()
@@ -144,6 +149,10 @@ class SettlementSummary:
     lost: int = 0
     void: int = 0
     still_open: int = 0
+    # The exact trades settled this run, with their final status/pnl/
+    # winning_outcome already applied - requirement #20, same rationale as
+    # CreationSummary.created_trades above.
+    settled_trades: list[PaperTrade] = field(default_factory=list)
 
 
 def settle_open_paper_trades(config: AppConfig, db: Database, *, limit: int = 500) -> SettlementSummary:
@@ -160,14 +169,24 @@ def settle_open_paper_trades(config: AppConfig, db: Database, *, limit: int = 50
                 continue
 
             if resolution.resolution_status == ResolutionStatus.INVALID:
-                paper_trade_repo.settle(
+                if paper_trade_repo.settle(
                     trade.market_id,
                     status=PaperTradeStatus.VOID,
                     settled_at=now,
                     winning_outcome=None,
                     pnl=0.0,
-                )
-                summary.void += 1
+                ):
+                    summary.void += 1
+                    summary.settled_trades.append(
+                        trade.model_copy(
+                            update={
+                                "status": PaperTradeStatus.VOID,
+                                "settled_at": now,
+                                "winning_outcome": None,
+                                "pnl": 0.0,
+                            }
+                        )
+                    )
                 continue
 
             # RESOLVED - compare selected_outcome to the actual winner.
@@ -178,17 +197,28 @@ def settle_open_paper_trades(config: AppConfig, db: Database, *, limit: int = 50
             )
             won = trade.selected_outcome == resolution.winning_outcome
             pnl = (1.0 - entry_price) if won else -entry_price
-            paper_trade_repo.settle(
+            status = PaperTradeStatus.WON if won else PaperTradeStatus.LOST
+            if paper_trade_repo.settle(
                 trade.market_id,
-                status=PaperTradeStatus.WON if won else PaperTradeStatus.LOST,
+                status=status,
                 settled_at=now,
                 winning_outcome=resolution.winning_outcome,
                 pnl=pnl,
-            )
-            if won:
-                summary.won += 1
-            else:
-                summary.lost += 1
+            ):
+                if won:
+                    summary.won += 1
+                else:
+                    summary.lost += 1
+                summary.settled_trades.append(
+                    trade.model_copy(
+                        update={
+                            "status": status,
+                            "settled_at": now,
+                            "winning_outcome": resolution.winning_outcome,
+                            "pnl": pnl,
+                        }
+                    )
+                )
     finally:
         resolution_repo.close()
         paper_trade_repo.close()
